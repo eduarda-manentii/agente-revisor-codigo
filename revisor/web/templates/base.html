@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {% if atualizar %}<meta http-equiv="refresh" content="4">{% endif %}
+  <title>{% block titulo %}Revisor{% endblock %}</title>
+  <link rel="stylesheet" href="/static/estilo.css">
+</head>
+<body>
+  <header class="topo">
+    <a href="/" class="marca">Revisor</a>
+    <span class="subtitulo">reviews no estilo de quem você treinou</span>
+  </header>
+  <main>
+    {% if msg %}<p class="aviso aviso-ok" role="status">{{ msg }}</p>{% endif %}
+    {% if erro %}<p class="aviso aviso-erro" role="alert">{{ erro }}</p>{% endif %}
+    {% block conteudo %}{% endblock %}
+  </main>
+</body>
+</html>

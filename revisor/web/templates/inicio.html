@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% set atualizar = atualizando %}
+{% block conteudo %}
+<section class="bloco">
+  <h1>Revisar um merge request</h1>
+  <form method="post" action="/revisoes" class="form-revisao">
+    <label for="url">Link do MR</label>
+    <input id="url" name="url" type="url" required placeholder="https://gitlab.suaempresa.com/grupo/projeto/-/merge_requests/123">
+    <fieldset class="perfis">
+      <legend>Revisor</legend>
+      {% for item in perfis %}
+      <label class="opcao">
+        <input type="radio" name="perfil" value="{{ item.perfil.nome }}" {% if loop.first %}checked{% endif %}>
+        <span><strong>{{ item.perfil.nome }}</strong> {{ item.perfil.descricao }}</span>
+      </label>
+      {% endfor %}
+    </fieldset>
+    <button type="submit" class="botao botao-principal">Revisar MR</button>
+  </form>
+</section>
+
+<section class="bloco">
+  <h2>Treino</h2>
+  <p class="ajuda">Cada treino busca os comentários novos da pessoa nos MRs mergeados e os incorpora ao guia, sem apagar o que já foi aprendido. Pode rodar quantas vezes quiser. Use “Reler histórico” depois de aumentar o período em TREINO_DESDE: nada é duplicado.</p>
+  <table class="tabela">
+    <thead><tr><th>Revisor</th><th>Comentários</th><th>Guia</th><th>Último treino</th><th></th></tr></thead>
+    <tbody>
+    {% for item in perfis %}
+      <tr>
+        <td><strong>{{ item.perfil.nome }}</strong></td>
+        <td>{{ item.exemplos }}{% if item.pendentes %} <span class="ajuda">({{ item.pendentes }} ainda fora do guia)</span>{% endif %}</td>
+        <td>{% if item.guia %}<a href="/perfis/{{ item.perfil.nome }}/guia">versão {{ item.guia.versao }}</a>{% else %}ainda não gerado{% endif %}</td>
+        <td>
+          {% if item.treino %}
+            {% if item.treino.status == "PROCESSANDO" %}<span class="estado estado-andamento">{{ item.treino.progresso or "Iniciando…" }}</span>
+            {% elif item.treino.status == "ERRO" %}<span class="estado estado-erro">Falhou: {{ item.treino.erro }}</span>
+            {% else %}{{ item.treino.concluido_em[:16].replace("T", " ") }} · {{ item.treino.novos_exemplos }} novo(s){% endif %}
+          {% else %}nunca{% endif %}
+        </td>
+        <td>
+          {% set ocupado = item.treino and item.treino.status == "PROCESSANDO" %}
+          <form method="post" action="/perfis/{{ item.perfil.nome }}/treinar" class="acoes-treino">
+            <button class="botao" {% if ocupado %}disabled{% endif %}>Treinar</button>
+            <button class="botao botao-discreto" name="completo" value="true" {% if ocupado %}disabled{% endif %}>Reler histórico</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="bloco">
+  <h2>Reviews anteriores</h2>
+  {% if revisoes %}
+  <table class="tabela">
+    <thead><tr><th>MR</th><th>Revisor</th><th>Situação</th><th>Data</th></tr></thead>
+    <tbody>
+    {% for r in revisoes %}
+      <tr>
+        <td><a href="/revisoes/{{ r.id }}">{{ r.titulo_mr or (r.projeto ~ " !" ~ r.mr_iid) }}</a></td>
+        <td>{{ r.perfil }}</td>
+        <td>{% if r.status == "PROCESSANDO" %}Revisando…{% elif r.status == "ERRO" %}<span class="estado estado-erro">Falhou</span>{% else %}Pronto{% endif %}</td>
+        <td>{{ r.criada_em[:16].replace("T", " ") }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="ajuda">Nenhum review ainda. Cole o link de um MR acima para começar.</p>
+  {% endif %}
+</section>
+{% endblock %}

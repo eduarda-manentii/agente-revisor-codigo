@@ -1,0 +1,6 @@
+nome = "back"
+descricao = "Java / Python / SQL"
+extensoes = [".java", ".py", ".sql", ".kt", ".xml", ".yml", ".yaml", ".properties"]
+instrucoes_arquivo = "instrucoes_back.md"
+max_apontamentos = 25
+confianca_minima = 5

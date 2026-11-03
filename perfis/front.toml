@@ -1,0 +1,6 @@
+nome = "front"
+descricao = "Angular / TypeScript"
+extensoes = [".ts", ".html", ".scss", ".css", ".js"]
+instrucoes_arquivo = "instrucoes_front.md"
+max_apontamentos = 25
+confianca_minima = 5

@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% set atualizar = revisao.status == "PROCESSANDO" %}
+{% block titulo %}{{ revisao.titulo_mr or "Review" }} · Revisor{% endblock %}
+{% block conteudo %}
+<section class="cabecalho-revisao">
+  <p class="caminho"><a href="/">Início</a> / {{ revisao.projeto }} !{{ revisao.mr_iid }}</p>
+  <h1>{{ revisao.titulo_mr or "Carregando MR…" }}</h1>
+  <p class="meta">
+    Revisor <strong>{{ revisao.perfil }}</strong>
+    {% if revisao.guia_versao %}· guia v{{ revisao.guia_versao }}{% else %}· sem guia treinado{% endif %}
+    · <a href="{{ revisao.mr_url }}" target="_blank" rel="noopener">abrir no GitLab</a>
+  </p>
+</section>
+
+{% if revisao.status == "PROCESSANDO" %}
+  <p class="aviso">O agente está lendo o MR. Esta página atualiza sozinha.</p>
+{% elif revisao.status == "ERRO" %}
+  <p class="aviso aviso-erro">O review falhou: {{ revisao.erro }}</p>
+{% else %}
+  {% if revisao.nota %}<p class="aviso">{{ revisao.nota }}</p>{% endif %}
+  {% if total %}
+  <div class="barra-publicar">
+    <p>
+      {{ contagem[Status.PENDENTE] }} a decidir · {{ contagem[Status.APROVADO] + contagem[Status.FALHA_PUBLICACAO] }} aprovado(s)
+      · {{ contagem[Status.REJEITADO] }} rejeitado(s) · {{ contagem[Status.PUBLICADO] }} publicado(s)
+      {% if revisao.descartados %}<span class="ajuda">({{ revisao.descartados }} sugestão(ões) descartada(s) por linha inválida ou baixa confiança)</span>{% endif %}
+    </p>
+    <form method="post" action="/revisoes/{{ revisao.id }}/publicar">
+      <button class="botao botao-principal" {% if not publicaveis %}disabled{% endif %}>Publicar {{ publicaveis }} aprovado(s) no MR</button>
+    </form>
+  </div>
+  {% endif %}
+
+  {% for arquivo, itens in por_arquivo %}
+  <section class="arquivo">
+    <h2 class="nome-arquivo">{{ arquivo }}</h2>
+    {% for ap in itens %}
+    <article id="ap-{{ ap.id }}" class="apontamento sev-{{ ap.severidade|lower }} st-{{ ap.status|lower }}">
+      <header class="apontamento-topo">
+        <span class="severidade">{{ ap.severidade }}</span>
+        <span>linha {{ ap.linha }}</span>
+        <span class="ajuda">confiança {{ ap.confianca }}/10</span>
+        <span class="estado">{{ rotulos_status[ap.status] }}{% if ap.motivo_rejeicao %}: {{ rotulos_motivo[ap.motivo_rejeicao] }}{% endif %}</span>
+      </header>
+      {% if ap.trecho %}<pre class="trecho"><code>{{ ap.trecho }}</code></pre>{% endif %}
+
+      {% if ap.status in [Status.PENDENTE, Status.APROVADO] %}
+      <form method="post" action="/revisoes/{{ revisao.id }}/apontamentos/{{ ap.id }}/aprovar" class="form-aprovar">
+        <label class="visualmente-oculto" for="texto-{{ ap.id }}">Comentário</label>
+        <textarea id="texto-{{ ap.id }}" name="texto" rows="4">{{ ap.texto_final }}</textarea>
+        <div class="acoes">
+          <button class="botao botao-aprovar">{% if ap.status == Status.APROVADO %}Salvar edição{% else %}Aprovar{% endif %}</button>
+        </div>
+      </form>
+      <form method="post" action="/revisoes/{{ revisao.id }}/apontamentos/{{ ap.id }}/rejeitar" class="form-rejeitar">
+        <label for="motivo-{{ ap.id }}">Rejeitar porque</label>
+        <select id="motivo-{{ ap.id }}" name="motivo">
+          {% for valor, rotulo in rotulos_motivo.items() %}<option value="{{ valor }}">{{ rotulo }}</option>{% endfor %}
+        </select>
+        <button class="botao botao-rejeitar">Rejeitar</button>
+      </form>
+      {% else %}
+      <blockquote class="texto-final">{{ ap.texto_final }}</blockquote>
+      {% if ap.erro %}<p class="estado estado-erro">Erro do GitLab: {{ ap.erro }}</p>{% endif %}
+      {% if ap.status == Status.REJEITADO %}
+      <form method="post" action="/revisoes/{{ revisao.id }}/apontamentos/{{ ap.id }}/reabrir">
+        <button class="botao">Desfazer rejeição</button>
+      </form>
+      {% endif %}
+      {% endif %}
+    </article>
+    {% endfor %}
+  </section>
+  {% endfor %}
+{% endif %}
+{% endblock %}

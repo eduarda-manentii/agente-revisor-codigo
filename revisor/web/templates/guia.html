@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block conteudo %}
+<p class="caminho"><a href="/">Início</a> / guia {{ perfil.nome }}</p>
+{% if guia %}
+<h1>Guia do revisor {{ perfil.nome }}, versão {{ guia.versao }}</h1>
+<p class="meta">Gerado em {{ guia.criado_em[:16].replace("T", " ") }}, com {{ guia.exemplos_usados }} comentários incorporados até aqui.</p>
+<div class="guia-layout">
+  <pre class="guia">{{ guia.conteudo }}</pre>
+  {% if versoes|length > 1 %}
+  <nav class="versoes" aria-label="Versões do guia">
+    <h2>Versões</h2>
+    <ol reversed>
+      {% for v in versoes %}
+      <li>{% if v.versao == guia.versao %}<strong>v{{ v.versao }}</strong>{% else %}<a href="?versao={{ v.versao }}">v{{ v.versao }}</a>{% endif %}
+        <span class="ajuda">{{ v.exemplos_usados }} coment.</span></li>
+      {% endfor %}
+    </ol>
+  </nav>
+  {% endif %}
+</div>
+{% else %}
+<h1>Guia do revisor {{ perfil.nome }}</h1>
+<p class="aviso">Ainda não há guia. Volte ao início e clique em Treinar.</p>
+{% endif %}
+{% endblock %}
