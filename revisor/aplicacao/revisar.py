@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from revisor import prompts
 from revisor.dominio.apontamento import Apontamento, Severidade
@@ -9,12 +10,17 @@ from revisor.dominio.diff import ArquivoDiff
 from revisor.dominio.fontes import verificar_fontes
 from revisor.dominio.heuristicas import ApontamentoSugerido, parse_saida_llm, selecionar_exemplos
 from revisor.dominio.modelos import GERAL, Perfil, Revisao, StatusExecucao, parse_url_mr
+from revisor.dominio.progresso import RevisaoCancelada, formatar_contagem, transicionar
 from revisor.portas import PortaGitLab, PortaLLM, Repositorio
 
 log = logging.getLogger(__name__)
 
 _ORDEM_SEVERIDADE = {Severidade.P0: 0, Severidade.P1: 1, Severidade.P2: 2}
 _LIMITE_ARQUIVO_COMPLETO = 40_000
+
+
+def _agora() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 class RevisarMR:
@@ -50,16 +56,37 @@ class RevisarMR:
     def executar(self, revisao_id: int) -> None:
         revisao = self._repo.obter_revisao(revisao_id)
         try:
+            revisao.status = transicionar(revisao.status, StatusExecucao.PROCESSANDO)
+            self._repo.salvar_revisao(revisao)
             self._processar(revisao)
-            revisao.status = StatusExecucao.CONCLUIDA
+            revisao.status = transicionar(revisao.status, StatusExecucao.CONCLUIDA)
+        except RevisaoCancelada:
+            revisao.status = transicionar(revisao.status, StatusExecucao.CANCELADA)
         except Exception as erro:  # registra qualquer falha para aparecer na tela
             log.exception("Falha na revisão %s", revisao_id)
-            revisao.status = StatusExecucao.ERRO
+            revisao.status = transicionar(revisao.status, StatusExecucao.ERRO)
             revisao.erro = str(erro) or erro.__class__.__name__
+        revisao.atualizado_em = _agora()
         self._repo.salvar_revisao(revisao)
+
+    def _progresso(self, revisao: Revisao, etapa: str, atual: int | None = None, total: int | None = None) -> None:
+        contagem = formatar_contagem(atual, total)
+        texto = f"{etapa} ({contagem})..." if contagem else f"{etapa}..."
+        agora = _agora()
+        if texto != revisao.etapa:
+            revisao.etapa_iniciada_em = agora
+        revisao.etapa = texto
+        revisao.atualizado_em = agora
+        self._repo.salvar_revisao(revisao)
+        self._repo.registrar_evento(revisao.id, texto, agora)
+
+    def _verificar_cancelamento(self, revisao: Revisao) -> None:
+        if self._repo.obter_revisao(revisao.id).status == StatusExecucao.CANCELADA:
+            raise RevisaoCancelada()
 
     def _processar(self, revisao: Revisao) -> None:
         perfil = self._perfis[revisao.perfil]
+        self._progresso(revisao, "Carregando diff do MR")
         mr = self._gitlab.obter_mr(revisao.projeto, revisao.mr_iid)
         revisao.titulo_mr = mr.titulo
         revisao.base_sha, revisao.start_sha, revisao.head_sha = mr.base_sha, mr.start_sha, mr.head_sha
@@ -72,6 +99,7 @@ class RevisarMR:
             revisao.nota = f"Nenhum arquivo do perfil {perfil.nome} neste MR."
             return
 
+        self._progresso(revisao, "Consultando o guia de padrões")
         guia_geral = self._repo.guia_ativo(perfil.nome, GERAL)
         guia_micro = self._repo.guia_ativo(perfil.nome, revisao.projeto)
         mapa = self._repo.mapa_ativo(revisao.projeto)
@@ -83,7 +111,13 @@ class RevisarMR:
         conteudos = self._conteudos_completos(revisao.projeto, arquivos, mr.head_sha)
 
         candidatos: list[Apontamento] = []
+        processados = 0
         for lote in self._agrupar(arquivos, conteudos):
+            for arquivo in lote:
+                processados += 1
+                self._verificar_cancelamento(revisao)
+                self._progresso(revisao, f"Revisando {arquivo.caminho_novo}", processados, len(arquivos))
+            self._progresso(revisao, "Gerando comentários")
             selecionados = selecionar_exemplos(
                 "\n".join(a.texto_adicionado() for a in lote), exemplos, self._k,
                 projeto_mr=revisao.projeto,

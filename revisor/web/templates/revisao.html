@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% set atualizar = revisao.status == "PROCESSANDO" %}
+{% set em_andamento = revisao.status in ("PENDENTE", "PROCESSANDO") %}
 {% block titulo %}{{ revisao.titulo_mr or "Review" }} · Revisor{% endblock %}
 {% block conteudo %}
 <section class="cabecalho-revisao">
@@ -12,12 +12,48 @@
     · código lido em {% if revisao.mapa_em %}{{ revisao.mapa_em[:10] }}{% else %}ainda não lido{% endif %}
     · <a href="{{ revisao.mr_url }}" target="_blank" rel="noopener">abrir no GitLab</a>
   </p>
+  <p class="meta cronometro">
+    <span id="etapa">{{ revisao.etapa or "Na fila..." }}</span>
+    · decorrido <span id="cronometro-total" data-inicio="{{ revisao.criada_em }}">{{ duracao_total }}</span>
+    {% if em_andamento and revisao.etapa_iniciada_em %}
+    · nesta etapa <span id="cronometro-etapa" data-inicio="{{ revisao.etapa_iniciada_em }}">{{ duracao_etapa }}</span>
+    {% endif %}
+  </p>
+  <div id="alerta-travado" class="aviso aviso-erro" {% if not travado %}hidden{% endif %}>
+    <p id="alerta-travado-texto">Sem atualização há algum tempo. O processo pode estar travado.</p>
+    <div class="acoes-treino">
+      <form method="post" action="/revisoes/{{ revisao.id }}/cancelar">
+        <button class="botao botao-rejeitar">Cancelar</button>
+      </form>
+      <form method="post" action="/revisoes/{{ revisao.id }}/reiniciar">
+        <button class="botao">Reiniciar</button>
+      </form>
+    </div>
+  </div>
+  {% if eventos %}
+  <details class="avisos">
+    <summary>Histórico ({{ eventos|length }} etapa(s))</summary>
+    <ul>{% for ev in eventos %}<li>{{ ev.criado_em }} — {{ ev.etapa }}</li>{% endfor %}</ul>
+  </details>
+  {% endif %}
 </section>
 
-{% if revisao.status == "PROCESSANDO" %}
-  <p class="aviso">O agente está lendo o MR. Esta página atualiza sozinha.</p>
+{% if em_andamento %}
+  <p class="aviso">O agente está avaliando o MR. Esta página atualiza sozinha.</p>
+  <form method="post" action="/revisoes/{{ revisao.id }}/cancelar">
+    <button class="botao botao-discreto">Cancelar avaliação</button>
+  </form>
 {% elif revisao.status == "ERRO" %}
-  <p class="aviso aviso-erro">O review falhou: {{ revisao.erro }}</p>
+  <p class="aviso aviso-erro">
+    O review falhou na etapa "{{ revisao.etapa }}": {{ revisao.erro }} (duração total {{ duracao_total }}).
+  </p>
+{% elif revisao.status == "CANCELADA" %}
+  <p class="aviso">
+    Avaliação cancelada (duração total {{ duracao_total }}).
+    <form method="post" action="/revisoes/{{ revisao.id }}/reiniciar" style="display:inline">
+      <button class="botao botao-discreto">Reiniciar</button>
+    </form>
+  </p>
 {% else %}
   {% if revisao.nota %}<p class="aviso">{{ revisao.nota }}</p>{% endif %}
   {% if total %}
@@ -103,5 +139,54 @@
     {% endfor %}
   </section>
   {% endfor %}
+{% endif %}
+
+{% if em_andamento %}
+<script>
+(function () {
+  function formatar(segundos) {
+    segundos = Math.max(0, Math.floor(segundos));
+    var h = Math.floor(segundos / 3600), m = Math.floor((segundos % 3600) / 60), s = segundos % 60;
+    function p(n) { return String(n).padStart(2, "0"); }
+    return h ? (p(h) + ":" + p(m) + ":" + p(s)) : (p(m) + ":" + p(s));
+  }
+
+  var etapaEl = document.getElementById("etapa");
+  var cronTotal = document.getElementById("cronometro-total");
+  var cronEtapa = document.getElementById("cronometro-etapa");
+  var alerta = document.getElementById("alerta-travado");
+  var alertaTexto = document.getElementById("alerta-travado-texto");
+  var ultimoHeartbeat = null;
+
+  function tick() {
+    if (cronTotal && cronTotal.dataset.inicio) {
+      cronTotal.textContent = formatar((Date.now() - new Date(cronTotal.dataset.inicio).getTime()) / 1000);
+    }
+    if (cronEtapa && cronEtapa.dataset.inicio) {
+      cronEtapa.textContent = formatar((Date.now() - new Date(cronEtapa.dataset.inicio).getTime()) / 1000);
+    }
+    if (alerta && !alerta.hidden && ultimoHeartbeat) {
+      var min = Math.floor((Date.now() - ultimoHeartbeat) / 60000);
+      alertaTexto.textContent = "Sem atualização há " + min + " min. O processo pode estar travado.";
+    }
+  }
+  setInterval(tick, 1000);
+
+  try {
+    var origem = new EventSource(window.location.pathname + "/eventos");
+    origem.onmessage = function (evento) {
+      var dados = JSON.parse(evento.data);
+      if (etapaEl) etapaEl.textContent = dados.etapa || "Na fila...";
+      if (dados.etapa_iniciada_em && cronEtapa) cronEtapa.dataset.inicio = dados.etapa_iniciada_em;
+      if (dados.atualizado_em) ultimoHeartbeat = new Date(dados.atualizado_em).getTime();
+      if (alerta) alerta.hidden = !dados.travado;
+      if (dados.status !== "PENDENTE" && dados.status !== "PROCESSANDO") {
+        origem.close();
+        window.location.reload();
+      }
+    };
+  } catch (e) { /* sem EventSource: a página fica como no carregamento, sem travar nada */ }
+})();
+</script>
 {% endif %}
 {% endblock %}

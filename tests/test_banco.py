@@ -1,6 +1,6 @@
 from revisor.dominio.apontamento import Apontamento, MotivoRejeicao, Severidade, Status
 from revisor.dominio.fontes import Fontes
-from revisor.dominio.modelos import GERAL, Exemplo, MapaProjeto, Revisao
+from revisor.dominio.modelos import GERAL, Exemplo, MapaProjeto, Revisao, StatusExecucao
 
 
 def test_round_trip_apontamento_com_enums_e_nulos(repo):
@@ -135,11 +135,38 @@ def test_checkpoint_por_projeto(repo):
 
 def test_execucoes_interrompidas_viram_erro(repo):
     from revisor.dominio.modelos import Treino
-    repo.criar_revisao(Revisao("u", "g/p", 1, "back"))
+    repo.criar_revisao(Revisao("u", "g/p", 1, "back"))  # nasce PENDENTE
+    repo.criar_revisao(Revisao("u", "g/p", 2, "back", status=StatusExecucao.PROCESSANDO))
     repo.criar_treino(Treino("back"))
     repo.marcar_execucoes_interrompidas()
-    assert repo.listar_revisoes()[0].status == "ERRO"
+    assert {r.status for r in repo.listar_revisoes()} == {StatusExecucao.ERRO}
     assert repo.ultimo_treino("back").status == "ERRO"
+
+
+# ---------- progresso: etapa, heartbeat e histórico ----------
+
+def test_revisao_guarda_etapa_e_heartbeat(repo):
+    revisao_id = repo.criar_revisao(Revisao("u", "g/p", 1, "back"))
+    revisao = repo.obter_revisao(revisao_id)
+    assert revisao.status == StatusExecucao.PENDENTE
+    revisao.etapa = "Revisando A.java (1 de 2)..."
+    revisao.etapa_iniciada_em = "2026-01-01T10:00:00+00:00"
+    revisao.atualizado_em = "2026-01-01T10:00:00+00:00"
+    repo.salvar_revisao(revisao)
+    lida = repo.obter_revisao(revisao_id)
+    assert lida.etapa == "Revisando A.java (1 de 2)..."
+    assert lida.etapa_iniciada_em == "2026-01-01T10:00:00+00:00"
+    assert lida.atualizado_em == "2026-01-01T10:00:00+00:00"
+
+
+def test_historico_de_eventos_preserva_ordem(repo):
+    revisao_id = repo.criar_revisao(Revisao("u", "g/p", 1, "back"))
+    assert repo.listar_eventos(revisao_id) == []
+    repo.registrar_evento(revisao_id, "Carregando diff do MR...", "2026-01-01T10:00:00+00:00")
+    repo.registrar_evento(revisao_id, "Consultando o guia de padrões...", "2026-01-01T10:00:02+00:00")
+    eventos = repo.listar_eventos(revisao_id)
+    assert [e.etapa for e in eventos] == ["Carregando diff do MR...", "Consultando o guia de padrões..."]
+    assert eventos[0].revisao_id == revisao_id
 
 
 def test_migra_banco_da_versao_anterior(tmp_path):
@@ -200,3 +227,9 @@ def test_migra_banco_da_versao_anterior(tmp_path):
     assert repo.obter_treino(1).avisos == ""
     revisao = repo.obter_revisao(1)
     assert revisao.guia_micro_versao is None and revisao.mapa_em == ""
+    assert revisao.etapa == "" and revisao.etapa_iniciada_em == "" and revisao.atualizado_em == ""
+
+    # histórico de etapas (tabela nova) existe e começa vazio, sem erro de migração
+    assert repo.listar_eventos(1) == []
+    repo.registrar_evento(1, "Carregando diff do MR...", "2026-01-01T00:00:00+00:00")
+    assert len(repo.listar_eventos(1)) == 1

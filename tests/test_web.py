@@ -1,4 +1,5 @@
 """Fluxo ponta a ponta pela interface, com GitLab e LLM falsos."""
+import json
 import re
 
 import pytest
@@ -18,6 +19,7 @@ URL_MR = "https://gitlab.empresa.com/g/api/-/merge_requests/3"
 def servicos(repo, gitlab, llm) -> Servicos:
     return Servicos(
         repo=repo, perfis=PERFIS, gitlab_url="https://gitlab.empresa.com",
+        limite_inatividade_segundos=60,
         revisar=RevisarMR(gitlab, llm, repo, PERFIS, "gitlab.empresa.com"),
         triar=TriarApontamento(repo),
         publicar=PublicarAprovados(gitlab, repo),
@@ -126,3 +128,65 @@ def test_apontamento_antigo_sem_fontes_mostra_aviso_de_versao_anterior(repo):
     resposta = cliente.get(f"/revisoes/{revisao_id}")
     assert "Reviews feitos antes desta versão não têm essa informação" in resposta.text
     assert "Sem precedente na equipe" not in resposta.text
+
+
+# ---------- progresso: etapa, cronômetro, histórico, cancelar/reiniciar ----------
+
+def test_tela_de_revisao_concluida_mostra_duracao_e_historico(ambiente):
+    cliente, repo, _ = ambiente
+    resposta = cliente.post("/revisoes", data={"url": URL_MR, "perfil": "back"})
+    revisao_id = int(re.search(r"/revisoes/(\d+)", str(resposta.url)).group(1))
+    assert "decorrido" in resposta.text
+    assert "Histórico (" in resposta.text
+    assert "Carregando diff do MR..." in resposta.text
+
+
+def test_eventos_sse_responde_text_event_stream_com_payload_valido(ambiente):
+    cliente, repo, _ = ambiente
+    resposta = cliente.post("/revisoes", data={"url": URL_MR, "perfil": "back"})
+    revisao_id = int(re.search(r"/revisoes/(\d+)", str(resposta.url)).group(1))
+
+    with cliente.stream("GET", f"/revisoes/{revisao_id}/eventos") as stream:
+        assert stream.status_code == 200
+        assert "text/event-stream" in stream.headers["content-type"]
+        linha = next(l for l in stream.iter_lines() if l.startswith("data: "))
+        payload = json.loads(linha[len("data: "):])
+    assert payload["status"] == "CONCLUIDA"
+    assert "travado" in payload and payload["travado"] is False
+
+
+def test_cancelar_muda_status_de_revisao_em_andamento(ambiente):
+    cliente, repo, _ = ambiente
+    revisao_id = repo.criar_revisao(Revisao(URL_MR, "g/api", 9, "back", status=StatusExecucao.PROCESSANDO))
+    resposta = cliente.post(f"/revisoes/{revisao_id}/cancelar")
+    assert "Revisão cancelada" in resposta.text
+    assert repo.obter_revisao(revisao_id).status == StatusExecucao.CANCELADA
+
+
+def test_cancelar_revisao_ja_terminal_e_rejeitado(ambiente):
+    cliente, repo, _ = ambiente
+    revisao_id = repo.criar_revisao(Revisao(URL_MR, "g/api", 9, "back", status=StatusExecucao.CONCLUIDA))
+    resposta = cliente.post(f"/revisoes/{revisao_id}/cancelar")
+    assert "Não é possível ir de" in resposta.text
+    assert repo.obter_revisao(revisao_id).status == StatusExecucao.CONCLUIDA
+
+
+def test_reiniciar_cria_nova_revisao_para_o_mesmo_mr(ambiente):
+    cliente, repo, _ = ambiente
+    revisao_id = repo.criar_revisao(Revisao(URL_MR, "g/api", 9, "back", status=StatusExecucao.PROCESSANDO))
+    resposta = cliente.post(f"/revisoes/{revisao_id}/reiniciar")
+    nova_id = int(re.search(r"/revisoes/(\d+)", str(resposta.url)).group(1))
+    assert nova_id != revisao_id
+    assert repo.obter_revisao(revisao_id).status == StatusExecucao.CANCELADA
+    nova = repo.obter_revisao(nova_id)
+    assert nova.mr_url == URL_MR and nova.status == StatusExecucao.CONCLUIDA  # já rodou (background síncrono no teste)
+
+
+def test_reload_da_pagina_mantem_a_mesma_etapa_persistida(ambiente):
+    cliente, repo, _ = ambiente
+    resposta = cliente.post("/revisoes", data={"url": URL_MR, "perfil": "back"})
+    revisao_id = int(re.search(r"/revisoes/(\d+)", str(resposta.url)).group(1))
+    primeira = cliente.get(f"/revisoes/{revisao_id}").text
+    segunda = cliente.get(f"/revisoes/{revisao_id}").text
+    etapa = repo.obter_revisao(revisao_id).etapa
+    assert etapa in primeira and etapa in segunda

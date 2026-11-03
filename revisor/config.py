@@ -34,6 +34,7 @@ class Config:
     revisores_excluidos: frozenset[str]
     min_comentarios_guia_micro: int
     mapa_validade_dias: int
+    limite_inatividade_segundos: int
     treino_desde: str
     banco: Path
     pasta_perfis: Path
@@ -78,6 +79,7 @@ def carregar_config() -> Config:
         ),
         min_comentarios_guia_micro=int(os.getenv("MIN_COMENTARIOS_GUIA_MICRO", "30")),
         mapa_validade_dias=int(os.getenv("MAPA_VALIDADE_DIAS", "30")),
+        limite_inatividade_segundos=int(os.getenv("LIMITE_INATIVIDADE_SEGUNDOS", "60")),
         treino_desde=os.getenv("TREINO_DESDE", desde_padrao).strip(),
         banco=RAIZ / os.getenv("BANCO", "dados/revisor.db"),
         pasta_perfis=RAIZ / "perfis",

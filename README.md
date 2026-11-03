@@ -44,7 +44,7 @@ pip install -r requirements.txt
    - `api`: usa uma chave da API da Anthropic (console.anthropic.com), cobrada por uso. Preencha `ANTHROPIC_API_KEY`.
 4. `GRUPOS_TREINO`: grupos do GitLab (formato da URL, ex. `attornatus/microservicos`) cujos projetos são descobertos automaticamente a cada treino, separados por vírgula.
 5. `PROJETOS_TREINO`: projetos avulsos fora desses grupos, no formato da URL (`grupo/projeto`), separados por vírgula. Pelo menos um entre `GRUPOS_TREINO` e `PROJETOS_TREINO` é obrigatório.
-6. Opcional: `REVISORES_EXCLUIDOS` (usuários/bots a ignorar no treino, sem `@`), `MIN_COMENTARIOS_GUIA_MICRO` (padrão 30) e `MAPA_VALIDADE_DIAS` (padrão 30).
+6. Opcional: `REVISORES_EXCLUIDOS` (usuários/bots a ignorar no treino, sem `@`), `MIN_COMENTARIOS_GUIA_MICRO` (padrão 30), `MAPA_VALIDADE_DIAS` (padrão 30) e `LIMITE_INATIVIDADE_SEGUNDOS` (padrão 60: segundos sem atualização de uma revisão em andamento até avisar que ela pode ter travado).
 
 ## Uso
 
@@ -57,7 +57,7 @@ Abra http://127.0.0.1:8765 no navegador.
 1. Clique em **Treinar** no revisor desejado. O primeiro treino lê os últimos 12 meses (ajuste com `TREINO_DESDE`) e pode demorar.
    Clique em "geral vN" para ler o guia geral, ou na aba de um microserviço para ver o guia próprio dele. Avisos do treino (projetos com falha, etc.) aparecem num bloco recolhível.
 2. Veja em **/mapas** o que o agente já leu do código de cada microserviço.
-3. Cole o link do MR, escolha **back** ou **front** e clique em **Revisar MR**.
+3. Cole o link do MR, escolha **back** ou **front** e clique em **Revisar MR**. A tela acompanha em tempo real a etapa atual (ex. "Revisando X.java (3 de 12)..."), o tempo decorrido total e na etapa, e mantém um histórico das etapas. Se ficar `LIMITE_INATIVIDADE_SEGUNDOS` sem atualização, aparece um aviso de possível travamento com as opções **Cancelar** e **Reiniciar**.
 4. Para cada apontamento: abra o bloco **"Por quê"** para ver a justificativa e as fontes, edite o texto se quiser e clique em **Aprovar**, ou escolha o motivo e clique em **Rejeitar**.
 5. Clique em **Publicar aprovados no MR**.
 

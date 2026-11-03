@@ -1,14 +1,17 @@
 """Interface web local. Só orquestra: regra de negócio fica nos casos de uso."""
 from __future__ import annotations
 
+import asyncio
+import json
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from itertools import groupby
 from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import BackgroundTasks, FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -16,7 +19,8 @@ from revisor.aplicacao.revisar import RevisarMR
 from revisor.aplicacao.treinar import TreinarPerfil
 from revisor.aplicacao.triagem_publicacao import PublicarAprovados, TriarApontamento
 from revisor.dominio.apontamento import MotivoRejeicao, Status, TransicaoInvalida
-from revisor.dominio.modelos import GERAL, Perfil
+from revisor.dominio.modelos import GERAL, Perfil, StatusExecucao
+from revisor.dominio.progresso import esta_travado, formatar_duracao, transicionar
 from revisor.portas import Repositorio
 
 _PASTA = Path(__file__).parent
@@ -43,10 +47,20 @@ class Servicos:
     repo: Repositorio
     perfis: dict[str, Perfil]
     gitlab_url: str
+    limite_inatividade_segundos: int
     revisar: RevisarMR
     triar: TriarApontamento
     publicar: PublicarAprovados
     treinar: TreinarPerfil
+
+
+def _duracao(inicio: str, fim: str) -> str:
+    if not inicio or not fim:
+        return "00:00"
+    try:
+        return formatar_duracao(int((datetime.fromisoformat(fim) - datetime.fromisoformat(inicio)).total_seconds()))
+    except ValueError:
+        return "00:00"
 
 
 def _voltar(url: str, mensagem: str = "", erro: bool = False) -> RedirectResponse:
@@ -107,9 +121,60 @@ def criar_app(s: Servicos) -> FastAPI:
             ap.id: s.repo.obter_exemplos(revisao.perfil, list(ap.fontes.comentarios))
             for ap in apontamentos if ap.fontes and ap.fontes.comentarios
         }
+        agora = datetime.now(timezone.utc)
+        travado = esta_travado(revisao.atualizado_em, agora, s.limite_inatividade_segundos)
+        fim = revisao.atualizado_em if revisao.status not in (
+            StatusExecucao.PENDENTE, StatusExecucao.PROCESSANDO
+        ) else agora.isoformat(timespec="seconds")
         return render(request, "revisao.html", revisao=revisao, por_arquivo=por_arquivo,
                       contagem=contagem, total=len(apontamentos), publicaveis=publicaveis,
-                      fontes_exemplos=fontes_exemplos)
+                      fontes_exemplos=fontes_exemplos, eventos=s.repo.listar_eventos(revisao_id),
+                      travado=travado, limite_inatividade=s.limite_inatividade_segundos,
+                      duracao_total=_duracao(revisao.criada_em, fim),
+                      duracao_etapa=_duracao(revisao.etapa_iniciada_em, fim))
+
+    @app.get("/revisoes/{revisao_id}/eventos")
+    async def eventos_revisao(revisao_id: int):
+        async def emitir():
+            while True:
+                revisao = s.repo.obter_revisao(revisao_id)
+                payload = {
+                    "status": revisao.status.value,
+                    "etapa": revisao.etapa,
+                    "etapa_iniciada_em": revisao.etapa_iniciada_em,
+                    "atualizado_em": revisao.atualizado_em,
+                    "criada_em": revisao.criada_em,
+                    "travado": esta_travado(
+                        revisao.atualizado_em, datetime.now(timezone.utc), s.limite_inatividade_segundos
+                    ),
+                }
+                yield f"data: {json.dumps(payload)}\n\n"
+                if revisao.status in (StatusExecucao.CONCLUIDA, StatusExecucao.ERRO, StatusExecucao.CANCELADA):
+                    return
+                await asyncio.sleep(1)
+
+        return StreamingResponse(emitir(), media_type="text/event-stream")
+
+    @app.post("/revisoes/{revisao_id}/cancelar")
+    def cancelar_revisao(revisao_id: int):
+        destino = f"/revisoes/{revisao_id}"
+        revisao = s.repo.obter_revisao(revisao_id)
+        try:
+            revisao.status = transicionar(revisao.status, StatusExecucao.CANCELADA)
+        except TransicaoInvalida as e:
+            return _voltar(destino, str(e), erro=True)
+        s.repo.salvar_revisao(revisao)
+        return _voltar(destino, "Revisão cancelada.")
+
+    @app.post("/revisoes/{revisao_id}/reiniciar")
+    def reiniciar_revisao(tarefas: BackgroundTasks, revisao_id: int):
+        atual = s.repo.obter_revisao(revisao_id)
+        if atual.status in (StatusExecucao.PENDENTE, StatusExecucao.PROCESSANDO):
+            atual.status = transicionar(atual.status, StatusExecucao.CANCELADA)
+            s.repo.salvar_revisao(atual)
+        novo_id = s.revisar.iniciar(atual.mr_url, atual.perfil)
+        tarefas.add_task(s.revisar.executar, novo_id)
+        return _voltar(f"/revisoes/{novo_id}")
 
     def _triagem(revisao_id: int, apontamento_id: int, acao) -> RedirectResponse:
         destino = f"/revisoes/{revisao_id}"

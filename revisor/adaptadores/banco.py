@@ -11,15 +11,30 @@ from typing import Iterator
 
 from revisor.dominio.apontamento import Apontamento, MotivoRejeicao, Severidade, Status
 from revisor.dominio.fontes import Fontes
-from revisor.dominio.modelos import GERAL, Exemplo, Guia, MapaProjeto, Revisao, StatusExecucao, Treino
+from revisor.dominio.modelos import (
+    GERAL,
+    EventoRevisao,
+    Exemplo,
+    Guia,
+    MapaProjeto,
+    Revisao,
+    StatusExecucao,
+    Treino,
+)
 
 _ESQUEMA = """
 CREATE TABLE IF NOT EXISTS revisoes (
     id INTEGER PRIMARY KEY, mr_url TEXT NOT NULL, projeto TEXT NOT NULL, mr_iid INTEGER NOT NULL,
     perfil TEXT NOT NULL, status TEXT NOT NULL, titulo_mr TEXT, base_sha TEXT, start_sha TEXT,
     head_sha TEXT, guia_versao INTEGER, guia_micro_versao INTEGER, mapa_em TEXT,
-    descartados INTEGER DEFAULT 0, nota TEXT, erro TEXT, criada_em TEXT NOT NULL
+    descartados INTEGER DEFAULT 0, nota TEXT, erro TEXT, etapa TEXT, etapa_iniciada_em TEXT,
+    atualizado_em TEXT, criada_em TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS eventos_revisao (
+    id INTEGER PRIMARY KEY, revisao_id INTEGER NOT NULL REFERENCES revisoes(id),
+    etapa TEXT NOT NULL, criado_em TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_eventos_revisao ON eventos_revisao(revisao_id);
 CREATE TABLE IF NOT EXISTS apontamentos (
     id INTEGER PRIMARY KEY, revisao_id INTEGER NOT NULL REFERENCES revisoes(id),
     arquivo TEXT NOT NULL, caminho_antigo TEXT NOT NULL, linha INTEGER NOT NULL,
@@ -70,6 +85,9 @@ _MIGRACOES = [
     ("treinos", "avisos", "TEXT"),
     ("revisoes", "guia_micro_versao", "INTEGER"),
     ("revisoes", "mapa_em", "TEXT"),
+    ("revisoes", "etapa", "TEXT"),
+    ("revisoes", "etapa_iniciada_em", "TEXT"),
+    ("revisoes", "atualizado_em", "TEXT"),
 ]
 
 _CAMPOS_APONTAMENTO = [f.name for f in fields(Apontamento) if f.name != "id"]
@@ -249,8 +267,27 @@ class RepositorioSQLite:
     def marcar_execucoes_interrompidas(self) -> None:
         aviso = "Interrompido: o Revisor foi fechado durante a execução. Rode de novo."
         with self._conexao() as con:
-            con.execute("UPDATE revisoes SET status = 'ERRO', erro = ? WHERE status = 'PROCESSANDO'", (aviso,))
+            con.execute(
+                "UPDATE revisoes SET status = 'ERRO', erro = ? WHERE status IN ('PROCESSANDO', 'PENDENTE')",
+                (aviso,),
+            )
             con.execute("UPDATE treinos SET status = 'ERRO', erro = ? WHERE status = 'PROCESSANDO'", (aviso,))
+
+    # ---------- histórico de etapas (RF07) ----------
+    def registrar_evento(self, revisao_id: int, etapa: str, criado_em: str) -> None:
+        with self._conexao() as con:
+            con.execute(
+                "INSERT INTO eventos_revisao (revisao_id, etapa, criado_em) VALUES (?, ?, ?)",
+                (revisao_id, etapa, criado_em),
+            )
+
+    def listar_eventos(self, revisao_id: int) -> list[EventoRevisao]:
+        with self._conexao() as con:
+            linhas = con.execute(
+                "SELECT * FROM eventos_revisao WHERE revisao_id = ? ORDER BY id", (revisao_id,)
+            ).fetchall()
+        return [EventoRevisao(revisao_id=r["revisao_id"], etapa=r["etapa"], criado_em=r["criado_em"],
+                              id=r["id"]) for r in linhas]
 
     # ---------- treinos ----------
     @staticmethod

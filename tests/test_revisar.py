@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from revisor.aplicacao.revisar import RevisarMR
@@ -203,3 +205,63 @@ def test_sem_nenhuma_fonte_citada_e_sem_precedente(repo):
     uc, _, _ = caso(repo, llm=FakeLLM([sugestao()]))
     _, aps = rodar(uc, repo)
     assert aps[0].fontes.sem_precedente
+
+
+# ---------- progresso: etapa, contagem, histórico e cancelamento ----------
+
+def test_revisao_nasce_pendente_antes_de_executar(repo):
+    uc, _, _ = caso(repo, llm=FakeLLM([sugestao()]))
+    revisao_id = uc.iniciar(URL, "back")
+    assert repo.obter_revisao(revisao_id).status == StatusExecucao.PENDENTE
+
+
+def test_cada_etapa_gera_exatamente_um_evento_com_contagem(repo):
+    mr = dados_mr(arquivo("A.java", DIFF_SERVICE), arquivo("B.java", DIFF_SERVICE))
+    uc, _, _ = caso(repo, gitlab=FakeGitLab(mr=mr), llm=FakeLLM([sugestao()]))
+    revisao, _ = rodar(uc, repo)
+
+    eventos = repo.listar_eventos(revisao.id)
+    etapas = [e.etapa for e in eventos]
+    assert etapas == [
+        "Carregando diff do MR...",
+        "Consultando o guia de padrões...",
+        "Revisando A.java (1 de 2)...",
+        "Revisando B.java (2 de 2)...",
+        "Gerando comentários...",
+    ]
+    assert all(e.criado_em for e in eventos)
+    assert revisao.etapa == "Gerando comentários..."
+    assert revisao.atualizado_em  # heartbeat final gravado
+
+
+def test_cancelamento_no_meio_interrompe_sem_gerar_apontamentos(repo):
+    mr = dados_mr(arquivo("A.java", DIFF_SERVICE), arquivo("B.java", DIFF_SERVICE))
+    gitlab = FakeGitLab(mr=mr)
+    uc, _, _ = caso(repo, gitlab=gitlab, max_caracteres_lote=50)  # força 2 lotes
+    revisao_id = uc.iniciar(URL, "back")
+
+    class LLMQueCancela:
+        def __init__(self):
+            self.chamadas = 0
+
+        def completar(self, sistema, usuario):
+            self.chamadas += 1
+            r = repo.obter_revisao(revisao_id)
+            r.status = StatusExecucao.CANCELADA
+            repo.salvar_revisao(r)
+            return json.dumps([sugestao()])
+
+    uc._llm = LLMQueCancela()
+    uc.executar(revisao_id)
+
+    revisao = repo.obter_revisao(revisao_id)
+    assert revisao.status == StatusExecucao.CANCELADA
+    assert repo.listar_apontamentos(revisao_id) == []
+    assert uc._llm.chamadas == 1  # só o primeiro lote chegou a chamar o LLM
+
+
+def test_falha_no_meio_preserva_a_ultima_etapa_tentada(repo):
+    uc, _, _ = caso(repo, llm=FakeLLM("não é json"))
+    revisao, _ = rodar(uc, repo)
+    assert revisao.status == StatusExecucao.ERRO
+    assert revisao.etapa == "Gerando comentários..."

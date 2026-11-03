@@ -65,9 +65,11 @@ def parse_url_mr(url: str) -> RefMR:
 
 
 class StatusExecucao(StrEnum):
+    PENDENTE = "PENDENTE"
     PROCESSANDO = "PROCESSANDO"
     CONCLUIDA = "CONCLUIDA"
     ERRO = "ERRO"
+    CANCELADA = "CANCELADA"
 
 
 @dataclass
@@ -76,7 +78,7 @@ class Revisao:
     projeto: str
     mr_iid: int
     perfil: str
-    status: StatusExecucao = StatusExecucao.PROCESSANDO
+    status: StatusExecucao = StatusExecucao.PENDENTE
     titulo_mr: str = ""
     base_sha: str = ""
     start_sha: str = ""
@@ -87,7 +89,19 @@ class Revisao:
     descartados: int = 0
     nota: str = ""
     erro: str = ""
+    etapa: str = ""
+    etapa_iniciada_em: str = ""
+    atualizado_em: str = ""
     criada_em: str = ""
+    id: int | None = None
+
+
+@dataclass(frozen=True)
+class EventoRevisao:
+    """Uma entrada no histórico de etapas de uma revisão (RF07)."""
+    revisao_id: int
+    etapa: str
+    criado_em: str
     id: int | None = None
 
 

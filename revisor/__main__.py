@@ -41,6 +41,7 @@ def main() -> None:
         repo=repo,
         perfis=perfis,
         gitlab_url=cfg.gitlab_url,
+        limite_inatividade_segundos=cfg.limite_inatividade_segundos,
         revisar=RevisarMR(gitlab, llm, repo, perfis, cfg.host_gitlab),
         triar=TriarApontamento(repo),
         publicar=PublicarAprovados(gitlab, repo),
