@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block conteudo %}
+<p class="caminho"><a href="/">Início</a> / mapas</p>
+<h1>Mapas técnicos</h1>
+<p class="ajuda">Lido a partir do código de cada microserviço, usado no review para entender componentes internos antes de apontar mau uso deles.</p>
+
+{% if mapa %}
+<section class="bloco">
+  <h2>{{ mapa.projeto }}</h2>
+  <p class="meta">Lido em {{ mapa.criado_em[:16].replace("T", " ") }} · {{ mapa.arquivos_lidos|length }} arquivo(s) lido(s) · SHA {{ mapa.sha[:8] }}</p>
+  <pre class="guia">{{ mapa.conteudo }}</pre>
+</section>
+{% else %}
+<p class="aviso">Nenhum microserviço mapeado ainda. Treine um perfil para gerar os mapas.</p>
+{% endif %}
+
+{% if mapas %}
+<section class="bloco">
+  <h2>Microserviços mapeados</h2>
+  <table class="tabela">
+    <thead><tr><th>Projeto</th><th>Lido em</th><th>Arquivos</th></tr></thead>
+    <tbody>
+    {% for m in mapas %}
+      <tr>
+        <td><a href="/mapas?projeto={{ m.projeto }}">{{ m.projeto }}</a></td>
+        <td>{{ m.criado_em[:10] }}</td>
+        <td>{{ m.arquivos_lidos|length }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+{% endblock %}

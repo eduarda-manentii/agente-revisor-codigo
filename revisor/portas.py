@@ -5,7 +5,16 @@ from dataclasses import dataclass
 from typing import Iterator, Protocol
 
 from revisor.dominio.apontamento import Apontamento
-from revisor.dominio.modelos import ComentarioHistorico, DadosMR, Exemplo, Guia, Revisao, Treino
+from revisor.dominio.modelos import (
+    GERAL,
+    ComentarioHistorico,
+    DadosMR,
+    Exemplo,
+    Guia,
+    MapaProjeto,
+    Revisao,
+    Treino,
+)
 
 
 @dataclass(frozen=True)
@@ -19,6 +28,12 @@ class Posicao:
     linha_antiga: int | None
 
 
+@dataclass(frozen=True)
+class ArvoreProjeto:
+    sha: str
+    caminhos: tuple[str, ...]
+
+
 class PortaGitLab(Protocol):
     def obter_mr(self, projeto: str, iid: int) -> DadosMR: ...
 
@@ -28,10 +43,26 @@ class PortaGitLab(Protocol):
         """Cria a discussion inline e retorna o id dela."""
         ...
 
+    def listar_projetos(self, grupo: str) -> list[str]:
+        """path_with_namespace de todos os projetos do grupo (com subgrupos, sem arquivados), A-Z."""
+        ...
+
     def listar_comentarios(
-        self, projeto: str, autor: str, desde: str
+        self, projeto: str, desde: str, excluir_autores: set[str]
     ) -> Iterator[ComentarioHistorico]:
-        """Comentários inline do autor em MRs mergeados atualizados desde `desde` (ISO-8601)."""
+        """Comentários inline em MRs mergeados atualizados desde `desde` (ISO-8601).
+
+        Ignora o autor do próprio MR (é ele respondendo, não revisando) e quem estiver em
+        `excluir_autores`.
+        """
+        ...
+
+    def obter_arvore(self, projeto: str) -> ArvoreProjeto:
+        """SHA do branch padrão e todos os caminhos de arquivo (recursivo, sem diretórios)."""
+        ...
+
+    def obter_arquivo(self, projeto: str, caminho: str, ref: str) -> str | None:
+        """Conteúdo completo do arquivo no ref dado, ou None se não existir/der erro."""
         ...
 
 
@@ -52,7 +83,7 @@ class Repositorio(Protocol):
     def obter_apontamento(self, apontamento_id: int) -> Apontamento: ...
     def listar_apontamentos(self, revisao_id: int) -> list[Apontamento]: ...
     def listar_rejeitados_pendentes(self, perfil: str) -> list[Apontamento]:
-        """Rejeitados que ainda não foram incorporados ao guia."""
+        """Rejeitados que ainda não foram incorporados ao guia geral."""
         ...
 
     # treino
@@ -69,16 +100,30 @@ class Repositorio(Protocol):
         """Retorna False se o exemplo já existia (deduplicação por perfil + note_id)."""
         ...
     def listar_exemplos(self, perfil: str, limite: int | None = None) -> list[Exemplo]: ...
-    def listar_exemplos_pendentes(self, perfil: str) -> list[Exemplo]:
-        """Exemplos que ainda não foram incorporados a nenhuma versão do guia."""
+    def listar_exemplos_pendentes(self, perfil: str, escopo: str) -> list[Exemplo]:
+        """Exemplos ainda não incorporados à camada `escopo` (GERAL ou um projeto)."""
+        ...
+    def obter_exemplos(self, perfil: str, note_ids: list[int]) -> list[Exemplo]:
+        """Preserva a ordem pedida e ignora note_ids inexistentes."""
         ...
     def contar_exemplos(self, perfil: str) -> int: ...
     def contar_exemplos_pendentes(self, perfil: str) -> int: ...
+    def contar_exemplos_por_projeto(self, perfil: str) -> list[tuple[str, int]]: ...
     def salvar_guia(
-        self, perfil: str, conteudo: str, note_ids: list[int], apontamento_ids: list[int]
+        self, perfil: str, escopo: str, conteudo: str, note_ids: list[int], apontamento_ids: list[int]
     ) -> int:
-        """Cria nova versão e marca os itens como incorporados, atomicamente. Retorna a versão."""
+        """Cria nova versão da camada `escopo` e marca os itens como incorporados, atomicamente."""
         ...
-    def guia_ativo(self, perfil: str) -> Guia | None: ...
-    def guia_por_versao(self, perfil: str, versao: int) -> Guia | None: ...
-    def listar_versoes_guia(self, perfil: str) -> list[Guia]: ...
+    def guia_ativo(self, perfil: str, escopo: str = GERAL) -> Guia | None: ...
+    def guia_por_versao(self, perfil: str, versao: int, escopo: str = GERAL) -> Guia | None: ...
+    def listar_versoes_guia(self, perfil: str, escopo: str = GERAL) -> list[Guia]: ...
+    def listar_escopos_guia(self, perfil: str) -> list[str]:
+        """Projetos (escopos != GERAL) que já têm ao menos uma versão de guia."""
+        ...
+
+    # mapas técnicos
+    def salvar_mapa(self, mapa: MapaProjeto) -> int: ...
+    def mapa_ativo(self, projeto: str) -> MapaProjeto | None: ...
+    def listar_mapas(self) -> list[MapaProjeto]:
+        """O mapa mais recente de cada projeto."""
+        ...

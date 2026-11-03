@@ -82,6 +82,8 @@ class Revisao:
     start_sha: str = ""
     head_sha: str = ""
     guia_versao: int | None = None
+    guia_micro_versao: int | None = None
+    mapa_em: str = ""
     descartados: int = 0
     nota: str = ""
     erro: str = ""
@@ -98,6 +100,8 @@ class ComentarioHistorico:
     linha: int | None
     comentario: str
     resolvido: bool
+    autor: str = ""
+    criado_em: str = ""
     trecho: str = ""
 
 
@@ -112,15 +116,32 @@ class Exemplo:
     trecho: str
     comentario: str
     resolvido: bool
+    autor: str = ""
+    criado_em: str = ""
+
+
+# Escopo especial do guia que vale para todos os projetos (em oposição ao guia de um micro).
+GERAL = "(geral)"
 
 
 @dataclass(frozen=True)
 class Guia:
     perfil: str
+    escopo: str
     versao: int
     conteudo: str
-    exemplos_usados: int  # total acumulado de comentários incorporados até esta versão
+    exemplos_usados: int  # total acumulado de comentários incorporados até esta versão, nesta camada
     criado_em: str
+
+
+@dataclass(frozen=True)
+class MapaProjeto:
+    projeto: str
+    sha: str
+    conteudo: str
+    arquivos_lidos: tuple[str, ...]
+    criado_em: str
+    id: int | None = None
 
 
 @dataclass
@@ -130,6 +151,7 @@ class Treino:
     status: StatusExecucao = StatusExecucao.PROCESSANDO
     novos_exemplos: int = 0
     guia_versao: int | None = None
+    avisos: str = ""
     progresso: str = ""
     erro: str = ""
     iniciado_em: str = ""

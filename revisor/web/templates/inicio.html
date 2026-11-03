@@ -21,20 +21,40 @@
 
 <section class="bloco">
   <h2>Treino</h2>
-  <p class="ajuda">Cada treino busca os comentários novos da pessoa nos MRs mergeados e os incorpora ao guia, sem apagar o que já foi aprendido. Pode rodar quantas vezes quiser. Use “Reler histórico” depois de aumentar o período em TREINO_DESDE: nada é duplicado.</p>
+  <p class="ajuda">
+    Cada treino faz quatro coisas, sem apagar nada do que já foi aprendido: descobre os projetos dos
+    grupos configurados, lê os comentários novos de toda a equipe nos MRs mergeados, incorpora o que
+    ainda falta ao guia geral e ao guia de cada microserviço com comentários suficientes, e lê o
+    código dos microserviços para manter o mapa técnico atualizado.
+    Pode rodar quantas vezes quiser. Use "Reler histórico" depois de aumentar o período em
+    TREINO_DESDE: nada é duplicado.
+  </p>
+  <p class="ajuda"><a href="/mapas">Código lido de {{ mapas|length }} microserviço(s)</a></p>
   <table class="tabela">
     <thead><tr><th>Revisor</th><th>Comentários</th><th>Guia</th><th>Último treino</th><th></th></tr></thead>
     <tbody>
     {% for item in perfis %}
       <tr>
         <td><strong>{{ item.perfil.nome }}</strong></td>
-        <td>{{ item.exemplos }}{% if item.pendentes %} <span class="ajuda">({{ item.pendentes }} ainda fora do guia)</span>{% endif %}</td>
-        <td>{% if item.guia %}<a href="/perfis/{{ item.perfil.nome }}/guia">versão {{ item.guia.versao }}</a>{% else %}ainda não gerado{% endif %}</td>
+        <td>
+          {{ item.exemplos }} em {{ item.projetos }} projeto(s)
+          {% if item.pendentes %}<br><span class="ajuda">({{ item.pendentes }} ainda fora do guia)</span>{% endif %}
+        </td>
+        <td>
+          {% if item.guia %}<a href="/perfis/{{ item.perfil.nome }}/guia">geral v{{ item.guia.versao }}</a>{% else %}ainda não gerado{% endif %}
+          {% if item.micros_com_guia %}<br><span class="ajuda">{{ item.micros_com_guia }} micro(s) com guia próprio</span>{% endif %}
+        </td>
         <td>
           {% if item.treino %}
             {% if item.treino.status == "PROCESSANDO" %}<span class="estado estado-andamento">{{ item.treino.progresso or "Iniciando…" }}</span>
             {% elif item.treino.status == "ERRO" %}<span class="estado estado-erro">Falhou: {{ item.treino.erro }}</span>
             {% else %}{{ item.treino.concluido_em[:16].replace("T", " ") }} · {{ item.treino.novos_exemplos }} novo(s){% endif %}
+            {% if item.treino.avisos %}
+            <details class="avisos">
+              <summary>{{ item.treino.avisos.strip().splitlines()|length }} aviso(s)</summary>
+              <ul>{% for linha in item.treino.avisos.strip().splitlines() %}<li>{{ linha }}</li>{% endfor %}</ul>
+            </details>
+            {% endif %}
           {% else %}nunca{% endif %}
         </td>
         <td>

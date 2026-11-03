@@ -1,22 +1,23 @@
 # Revisor
 
-Agente de code review que aprende com os comentários reais de uma pessoa no GitLab.
+Agente de code review que aprende com os comentários reais de toda a equipe no GitLab.
 Você cola o link de um MR, escolhe o revisor (back ou front), revisa cada apontamento
 (aprova, edita ou rejeita) e publica os aprovados como comentários no MR, no seu nome.
 
 ## Como funciona o "treino"
 
-Não existe fine-tuning de modelo. O treino é **sempre cumulativo**:
+Não existe fine-tuning de modelo. O treino é **sempre cumulativo** e tem quatro etapas:
 
-1. Lê os comentários inline da pessoa-alvo nos MRs mergeados de cada projeto, a partir de onde parou naquele projeto. Um projeto novo na configuração tem o histórico inteiro lido.
-2. Guarda cada comentário com o trecho de código a que ele se refere. Nada é apagado e nada é duplicado.
-3. Incorpora ao guia só os comentários que ainda não estão nele. Cada lote é **fundido** ao guia atual: padrões existentes são mantidos e reforçados, padrões novos são adicionados. Cada lote gera uma versão nova, e as versões anteriores ficam disponíveis na tela do guia.
-4. Muitos comentários são divididos em vários lotes; nenhum é descartado. Se o treino cair no meio, os lotes já incorporados ficam salvos e o restante entra no próximo treino.
+1. **Descobre os projetos.** Lê todos os projetos dos grupos em `GRUPOS_TREINO` (com subgrupos, sem arquivados) e junta com os avulsos de `PROJETOS_TREINO`, sem duplicar.
+2. **Coleta os comentários de todo mundo.** Lê os comentários inline de qualquer revisor nos MRs mergeados de cada projeto, a partir de onde parou naquele projeto (um projeto novo tem o histórico inteiro lido). Ignora respostas do próprio autor do MR e quem estiver em `REVISORES_EXCLUIDOS`. Guarda cada comentário com autor, data e o trecho de código a que se refere. Nada é apagado e nada é duplicado.
+3. **Incorpora aos guias.** Existe um guia **geral** (o que a equipe cobra em qualquer projeto) e um guia **por microserviço** (só o que é particular daquele projeto — regras de negócio, componentes internos, armadilhas, convenções), que aparece quando o projeto atinge `MIN_COMENTARIOS_GUIA_MICRO` comentários. Cada lote pendente é **fundido** ao guia atual daquela camada: padrões existentes são mantidos e reforçados, padrões novos são adicionados. Cada lote gera uma versão nova, e as versões anteriores ficam disponíveis na tela do guia. Nenhum comentário é descartado; se o treino cair no meio, os lotes já incorporados ficam salvos e o restante entra no próximo treino.
+4. **Lê o código.** Para cada microserviço, lê uma amostra do código (sem testes, segredos ou dependências) e gera um mapa técnico — propósito, stack, arquitetura, componentes internos reutilizáveis, convenções e pontos de atenção — usado no review para não apontar mau uso de algo que a equipe já resolve de outro jeito. Só é refeito quando o mapa vence (`MAPA_VALIDADE_DIAS`) e o código mudou; senão não gasta chamada de LLM.
 
-No review, o agente usa o guia mais recente **e** todos os comentários guardados (os mais parecidos com o código do MR entram como exemplo).
-Os apontamentos que você rejeita entram no próximo treino como "o que evitar".
+No review, o agente usa o guia geral, o guia do microserviço do MR (quando existir, prevalece sobre o geral), o mapa técnico do projeto, o arquivo completo de cada arquivo alterado (não só o diff) e os comentários guardados mais parecidos com o código do MR. Os apontamentos que você rejeita entram no próximo treino do guia geral como "o que evitar".
 
-**Reler histórico** busca de novo tudo desde `TREINO_DESDE`, ignorando onde parou. Use depois de aumentar o período (por exemplo, de 12 para 36 meses); nada é duplicado.
+Cada apontamento mostra um bloco **"Por quê"**: a justificativa do modelo e as fontes citadas (comentário real, padrão do guia ou regra do perfil), cada uma conferida contra o que de fato existe — uma citação inventada aparece como descartada, nunca como fonte válida.
+
+**Reler histórico** busca de novo tudo desde `TREINO_DESDE`, ignorando onde parou, e relê o código de todos os microserviços independente da validade do mapa. Use depois de aumentar o período (por exemplo, de 12 para 36 meses); nada é duplicado.
 
 ## Instalação (uma vez só)
 
@@ -41,8 +42,9 @@ pip install -r requirements.txt
 3. **Qual Claude usar** (`LLM_PROVEDOR`):
    - `claude-code` (padrão): usa o Claude Code instalado e logado na sua máquina, consumindo os limites da sua assinatura. Não precisa de chave. Antes de usar, rode `claude` uma vez no terminal e faça login.
    - `api`: usa uma chave da API da Anthropic (console.anthropic.com), cobrada por uso. Preencha `ANTHROPIC_API_KEY`.
-4. `REVISOR_ALVO`: o usuário do GitLab da pessoa cujo estilo você quer copiar.
-5. `PROJETOS_TREINO`: os projetos onde ela revisa, no formato da URL (`grupo/projeto`), separados por vírgula.
+4. `GRUPOS_TREINO`: grupos do GitLab (formato da URL, ex. `attornatus/microservicos`) cujos projetos são descobertos automaticamente a cada treino, separados por vírgula.
+5. `PROJETOS_TREINO`: projetos avulsos fora desses grupos, no formato da URL (`grupo/projeto`), separados por vírgula. Pelo menos um entre `GRUPOS_TREINO` e `PROJETOS_TREINO` é obrigatório.
+6. Opcional: `REVISORES_EXCLUIDOS` (usuários/bots a ignorar no treino, sem `@`), `MIN_COMENTARIOS_GUIA_MICRO` (padrão 30) e `MAPA_VALIDADE_DIAS` (padrão 30).
 
 ## Uso
 
@@ -53,16 +55,17 @@ python -m revisor
 Abra http://127.0.0.1:8765 no navegador.
 
 1. Clique em **Treinar** no revisor desejado. O primeiro treino lê os últimos 12 meses (ajuste com `TREINO_DESDE`) e pode demorar.
-   Clique em "versão N" para ler o guia gerado e conferir se faz sentido.
-2. Cole o link do MR, escolha **back** ou **front** e clique em **Revisar MR**.
-3. Para cada apontamento: edite o texto se quiser e clique em **Aprovar**, ou escolha o motivo e clique em **Rejeitar**.
-4. Clique em **Publicar aprovados no MR**.
+   Clique em "geral vN" para ler o guia geral, ou na aba de um microserviço para ver o guia próprio dele. Avisos do treino (projetos com falha, etc.) aparecem num bloco recolhível.
+2. Veja em **/mapas** o que o agente já leu do código de cada microserviço.
+3. Cole o link do MR, escolha **back** ou **front** e clique em **Revisar MR**.
+4. Para cada apontamento: abra o bloco **"Por quê"** para ver a justificativa e as fontes, edite o texto se quiser e clique em **Aprovar**, ou escolha o motivo e clique em **Rejeitar**.
+5. Clique em **Publicar aprovados no MR**.
 
 ### Ajustar os revisores
 
 Cada revisor é um arquivo em `perfis/`:
 
-- `back.toml` / `front.toml`: extensões de arquivo, máximo de apontamentos, confiança mínima.
+- `back.toml` / `front.toml`: descrição, extensões de arquivo, máximo de apontamentos, confiança mínima. O perfil `back` vem configurado só para Java/Spring.
 - `instrucoes_back.md` / `instrucoes_front.md`: as regras de review. Cole aqui o conteúdo do seu skill `/revisar-entrega`.
 
 Para criar outro revisor (por exemplo, SQL), copie um par `.toml` + `.md` e mude o nome.
@@ -80,6 +83,8 @@ Para criar outro revisor (por exemplo, SQL), copie um par `.toml` + `.md` e mude
 - Comentários só em linhas adicionadas ou de contexto (lado novo do diff), não em linhas removidas.
 - Em GitLab anterior à 15.7, o diff vem do endpoint antigo `/changes`, que pode truncar MRs muito grandes.
 - O treino lê só MRs mergeados e só comentários inline (não lê comentários gerais do MR).
+- Arquivo alterado com mais de 40 mil caracteres vai para o review só com o diff, sem o arquivo completo.
+- O bloco "Por quê" mostra a justificativa que o próprio modelo deu, com as fontes conferidas — não é um registro do raciocínio interno dele.
 - Seu código é enviado à Anthropic (pelo Claude Code ou pela API). Confirme que isso é permitido pela política da empresa.
 - Com `claude-code`, treinos grandes consomem o mesmo limite de uso que você usa no Claude Code no dia a dia. Se o limite acabar no meio, o treino para e continua de onde parou na próxima vez.
 - Com `claude-code`, as configurações do seu usuário em `~/.claude` (como o `CLAUDE.md` global) também são carregadas em cada chamada.

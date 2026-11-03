@@ -150,3 +150,16 @@ textarea { width: 100%; resize: vertical; }
 .versoes ol { list-style: none; padding: 0; margin: 0; }
 .versoes li { padding: .2rem 0; }
 @media (max-width: 720px) { .guia-layout { grid-template-columns: 1fr; } }
+
+.abas { display: flex; gap: 1rem; border-bottom: 1px solid var(--linha); margin-bottom: 1.25rem; flex-wrap: wrap; }
+.abas a { padding: .5rem 0; text-decoration: none; color: var(--tinta-suave); }
+.abas a.aba-ativa { color: var(--tinta); font-weight: 600; border-bottom: 2px solid var(--acao); }
+
+.avisos { margin-top: .35rem; }
+.avisos summary { cursor: pointer; color: var(--tinta-suave); }
+.avisos ul { margin: .35rem 0 0; padding-left: 1.1rem; }
+
+.por-que { margin: 0 0 .75rem; padding: .6rem .75rem; background: var(--codigo); border-radius: 4px; }
+.por-que summary { cursor: pointer; font-weight: 600; }
+.por-que .fonte { margin-top: .6rem; padding-top: .6rem; border-top: 1px solid var(--linha); }
+.selo-sem-precedente { display: inline-block; font-size: .85rem; color: var(--tinta-suave); font-style: italic; }

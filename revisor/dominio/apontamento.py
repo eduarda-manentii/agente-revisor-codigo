@@ -4,6 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from revisor.dominio.fontes import Fontes
+
 
 class Severidade(StrEnum):
     P0 = "P0"
@@ -51,6 +53,8 @@ class Apontamento:
     motivo_rejeicao: MotivoRejeicao | None = None
     discussion_id: str | None = None
     erro: str | None = None
+    motivo: str = ""
+    fontes: Fontes | None = None
     id: int | None = None
 
     def __post_init__(self) -> None:

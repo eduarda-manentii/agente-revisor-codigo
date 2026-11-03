@@ -7,7 +7,9 @@
   <h1>{{ revisao.titulo_mr or "Carregando MR…" }}</h1>
   <p class="meta">
     Revisor <strong>{{ revisao.perfil }}</strong>
-    {% if revisao.guia_versao %}· guia v{{ revisao.guia_versao }}{% else %}· sem guia treinado{% endif %}
+    · guia geral {% if revisao.guia_versao %}v{{ revisao.guia_versao }}{% else %}sem guia treinado{% endif %}
+    · guia do micro {% if revisao.guia_micro_versao %}v{{ revisao.guia_micro_versao }}{% else %}sem guia próprio do micro{% endif %}
+    · código lido em {% if revisao.mapa_em %}{{ revisao.mapa_em[:10] }}{% else %}ainda não lido{% endif %}
     · <a href="{{ revisao.mr_url }}" target="_blank" rel="noopener">abrir no GitLab</a>
   </p>
 </section>
@@ -43,6 +45,35 @@
         <span class="estado">{{ rotulos_status[ap.status] }}{% if ap.motivo_rejeicao %}: {{ rotulos_motivo[ap.motivo_rejeicao] }}{% endif %}</span>
       </header>
       {% if ap.trecho %}<pre class="trecho"><code>{{ ap.trecho }}</code></pre>{% endif %}
+
+      {% if ap.fontes %}
+      <details class="por-que" open>
+        <summary>Por quê</summary>
+        {% if not ap.fontes.registrada %}
+        <p class="ajuda">Reviews feitos antes desta versão não têm essa informação.</p>
+        {% else %}
+          {% if ap.motivo %}<p>{{ ap.motivo }}</p>{% endif %}
+          {% for ex in fontes_exemplos.get(ap.id, []) %}
+          <div class="fonte">
+            <p class="meta">
+              Comentário da equipe — {{ ex.autor }}, {{ ex.criado_em[:10] }}, {{ ex.projeto }} !{{ ex.mr_iid }}
+              · <a href="{{ gitlab_url }}/{{ ex.projeto }}/-/merge_requests/{{ ex.mr_iid }}#note_{{ ex.note_id }}" target="_blank" rel="noopener">ver no GitLab</a>
+            </p>
+            <blockquote class="texto-final">{{ ex.comentario }}</blockquote>
+            {% if ex.trecho %}<details><summary>Código comentado na época</summary><pre class="trecho"><code>{{ ex.trecho }}</code></pre></details>{% endif %}
+          </div>
+          {% endfor %}
+          {% if ap.fontes.padrao_confirmado %}<p><strong>Padrão do guia:</strong> {{ ap.fontes.padrao_guia }}</p>{% endif %}
+          {% if ap.fontes.regra_confirmada %}<p><strong>Regra do perfil:</strong> {{ ap.fontes.regra_perfil }}</p>{% endif %}
+          {% if ap.fontes.sem_precedente %}
+          <p class="selo-sem-precedente">Sem precedente na equipe — vem do conhecimento geral do modelo.</p>
+          {% endif %}
+          {% if ap.fontes.comentarios_nao_confirmados %}
+          <p class="ajuda">Citações descartadas (não encontradas): {{ ap.fontes.comentarios_nao_confirmados|join(', ') }}</p>
+          {% endif %}
+        {% endif %}
+      </details>
+      {% endif %}
 
       {% if ap.status in [Status.PENDENTE, Status.APROVADO] %}
       <form method="post" action="/revisoes/{{ revisao.id }}/apontamentos/{{ ap.id }}/aprovar" class="form-aprovar">

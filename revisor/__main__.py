@@ -40,11 +40,16 @@ def main() -> None:
     servicos = Servicos(
         repo=repo,
         perfis=perfis,
+        gitlab_url=cfg.gitlab_url,
         revisar=RevisarMR(gitlab, llm, repo, perfis, cfg.host_gitlab),
         triar=TriarApontamento(repo),
         publicar=PublicarAprovados(gitlab, repo),
-        treinar=TreinarPerfil(gitlab, llm, repo, perfis, cfg.revisor_alvo,
-                              cfg.projetos_treino, cfg.treino_desde),
+        treinar=TreinarPerfil(
+            gitlab, llm, repo, perfis, cfg.grupos_treino, cfg.projetos_treino,
+            cfg.revisores_excluidos, cfg.treino_desde,
+            min_comentarios_guia_micro=cfg.min_comentarios_guia_micro,
+            mapa_validade_dias=cfg.mapa_validade_dias,
+        ),
     )
     print(f"\n  Revisor rodando em http://127.0.0.1:{cfg.porta}\n")
     # 127.0.0.1: só a sua máquina acessa. O token do GitLab tem poder de escrita.

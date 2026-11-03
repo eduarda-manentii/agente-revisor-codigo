@@ -16,7 +16,7 @@ from revisor.aplicacao.revisar import RevisarMR
 from revisor.aplicacao.treinar import TreinarPerfil
 from revisor.aplicacao.triagem_publicacao import PublicarAprovados, TriarApontamento
 from revisor.dominio.apontamento import MotivoRejeicao, Status, TransicaoInvalida
-from revisor.dominio.modelos import Perfil
+from revisor.dominio.modelos import GERAL, Perfil
 from revisor.portas import Repositorio
 
 _PASTA = Path(__file__).parent
@@ -42,6 +42,7 @@ ROTULOS_STATUS = {
 class Servicos:
     repo: Repositorio
     perfis: dict[str, Perfil]
+    gitlab_url: str
     revisar: RevisarMR
     triar: TriarApontamento
     publicar: PublicarAprovados
@@ -59,7 +60,10 @@ def criar_app(s: Servicos) -> FastAPI:
     app = FastAPI(title="Revisor", docs_url=None, redoc_url=None)
     app.mount("/static", StaticFiles(directory=_PASTA / "static"), name="static")
     templates = Jinja2Templates(directory=_PASTA / "templates")
-    templates.env.globals.update(rotulos_motivo=ROTULOS_MOTIVO, rotulos_status=ROTULOS_STATUS, Status=Status)
+    templates.env.globals.update(
+        rotulos_motivo=ROTULOS_MOTIVO, rotulos_status=ROTULOS_STATUS, Status=Status,
+        GERAL=GERAL, gitlab_url=s.gitlab_url,
+    )
 
     def render(request: Request, nome: str, **contexto) -> HTMLResponse:
         contexto.update(msg=request.query_params.get("msg"), erro=request.query_params.get("erro"))
@@ -71,15 +75,17 @@ def criar_app(s: Servicos) -> FastAPI:
             {
                 "perfil": p,
                 "treino": s.repo.ultimo_treino(p.nome),
-                "guia": s.repo.guia_ativo(p.nome),
+                "guia": s.repo.guia_ativo(p.nome, GERAL),
                 "exemplos": s.repo.contar_exemplos(p.nome),
                 "pendentes": s.repo.contar_exemplos_pendentes(p.nome),
+                "projetos": len(s.repo.contar_exemplos_por_projeto(p.nome)),
+                "micros_com_guia": len(s.repo.listar_escopos_guia(p.nome)),
             }
             for p in s.perfis.values()
         ]
         atualizando = any(i["treino"] and i["treino"].status == "PROCESSANDO" for i in perfis)
-        return render(request, "inicio.html", perfis=perfis,
-                      revisoes=s.repo.listar_revisoes(), atualizando=atualizando)
+        return render(request, "inicio.html", perfis=perfis, revisoes=s.repo.listar_revisoes(),
+                      atualizando=atualizando, mapas=s.repo.listar_mapas())
 
     @app.post("/revisoes")
     def nova_revisao(tarefas: BackgroundTasks, url: str = Form(...), perfil: str = Form(...)):
@@ -97,8 +103,13 @@ def criar_app(s: Servicos) -> FastAPI:
         por_arquivo = [(arq, list(itens)) for arq, itens in groupby(apontamentos, key=lambda a: a.arquivo)]
         contagem = Counter(a.status for a in apontamentos)
         publicaveis = sum(1 for a in apontamentos if a.pode_publicar)
+        fontes_exemplos = {
+            ap.id: s.repo.obter_exemplos(revisao.perfil, list(ap.fontes.comentarios))
+            for ap in apontamentos if ap.fontes and ap.fontes.comentarios
+        }
         return render(request, "revisao.html", revisao=revisao, por_arquivo=por_arquivo,
-                      contagem=contagem, total=len(apontamentos), publicaveis=publicaveis)
+                      contagem=contagem, total=len(apontamentos), publicaveis=publicaveis,
+                      fontes_exemplos=fontes_exemplos)
 
     def _triagem(revisao_id: int, apontamento_id: int, acao) -> RedirectResponse:
         destino = f"/revisoes/{revisao_id}"
@@ -145,9 +156,20 @@ def criar_app(s: Servicos) -> FastAPI:
         return _voltar("/", f"Treino do perfil {nome} iniciado.")
 
     @app.get("/perfis/{nome}/guia", response_class=HTMLResponse)
-    def ver_guia(request: Request, nome: str, versao: int | None = None):
-        guia = s.repo.guia_por_versao(nome, versao) if versao else s.repo.guia_ativo(nome)
-        return render(request, "guia.html", perfil=s.perfis[nome], guia=guia,
-                      versoes=s.repo.listar_versoes_guia(nome))
+    def ver_guia(request: Request, nome: str, escopo: str = GERAL, versao: int | None = None):
+        guia = s.repo.guia_por_versao(nome, versao, escopo) if versao else s.repo.guia_ativo(nome, escopo)
+        contagem_projetos = s.repo.contar_exemplos_por_projeto(nome) if escopo == GERAL else []
+        return render(request, "guia.html", perfil=s.perfis[nome], guia=guia, escopo=escopo,
+                      escopos=s.repo.listar_escopos_guia(nome),
+                      versoes=s.repo.listar_versoes_guia(nome, escopo),
+                      contagem_projetos=contagem_projetos)
+
+    @app.get("/mapas", response_class=HTMLResponse)
+    def ver_mapas(request: Request, projeto: str | None = None):
+        mapas = s.repo.listar_mapas()
+        mapa = s.repo.mapa_ativo(projeto) if projeto else (
+            s.repo.mapa_ativo(mapas[0].projeto) if mapas else None
+        )
+        return render(request, "mapas.html", mapas=mapas, mapa=mapa)
 
     return app

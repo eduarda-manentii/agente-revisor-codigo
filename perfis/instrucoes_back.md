@@ -1,4 +1,6 @@
-Revise como Tech Lead de backend. Procure, nesta ordem:
+Revise como Tech Lead de backend Java / Spring.
+
+Procure, nesta ordem:
 
 1. Bugs e regressões: lógica errada, null não tratado, transação faltando, concorrência.
 2. Segurança: endpoint sem controle de acesso, filtro de tenant vindo do request em vez do contexto,

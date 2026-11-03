@@ -10,7 +10,7 @@ from gitlab.exceptions import GitlabError, GitlabHttpError
 
 from revisor.dominio.diff import ArquivoDiff, parse_hunks
 from revisor.dominio.modelos import ComentarioHistorico, DadosMR
-from revisor.portas import Posicao
+from revisor.portas import ArvoreProjeto, Posicao
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +27,12 @@ class GitLabAdapter:
     @lru_cache(maxsize=64)
     def _projeto(self, caminho: str) -> Any:
         return self._gl.projects.get(caminho)
+
+    # ---------- descoberta ----------
+    def listar_projetos(self, grupo: str) -> list[str]:
+        g = self._gl.groups.get(grupo)
+        projetos = g.projects.list(include_subgroups=True, archived=False, iterator=True)
+        return sorted(p.path_with_namespace for p in projetos)
 
     # ---------- review ----------
     def obter_mr(self, projeto: str, iid: int) -> DadosMR:
@@ -89,24 +95,26 @@ class GitLabAdapter:
         discussion = mr.discussions.create({"body": corpo, "position": position})
         return str(discussion.id)
 
-    # ---------- treino ----------
+    # ---------- treino: comentários ----------
     def listar_comentarios(
-        self, projeto: str, autor: str, desde: str
+        self, projeto: str, desde: str, excluir_autores: set[str]
     ) -> Iterator[ComentarioHistorico]:
         p = self._projeto(projeto)
         for mr in p.mergerequests.list(state="merged", updated_after=desde, iterator=True):
+            autor_mr = (mr.author or {}).get("username", "")
             for discussion in mr.discussions.list(iterator=True):
                 notas = discussion.attributes.get("notes") or []
                 resolvido = any(n.get("resolved") for n in notas)
                 for nota in notas:
                     if nota.get("system") or nota.get("type") != "DiffNote":
                         continue
-                    if (nota.get("author") or {}).get("username") != autor:
+                    autor_nota = (nota.get("author") or {}).get("username", "")
+                    if autor_nota == autor_mr or autor_nota in excluir_autores:
                         continue
-                    yield self._para_comentario(p, projeto, mr.iid, nota, resolvido)
+                    yield self._para_comentario(p, projeto, mr.iid, nota, resolvido, autor_nota)
 
     def _para_comentario(
-        self, p: Any, projeto: str, mr_iid: int, nota: dict, resolvido: bool
+        self, p: Any, projeto: str, mr_iid: int, nota: dict, resolvido: bool, autor: str
     ) -> ComentarioHistorico:
         pos = nota.get("position") or {}
         if pos.get("new_line"):
@@ -116,25 +124,42 @@ class GitLabAdapter:
         trecho = self._trecho(p.id, arquivo, ref, linha) if (ref and linha) else ""
         return ComentarioHistorico(
             projeto=projeto, mr_iid=mr_iid, note_id=int(nota["id"]), arquivo=arquivo,
-            linha=linha, comentario=nota.get("body", ""), resolvido=resolvido, trecho=trecho,
+            linha=linha, comentario=nota.get("body", ""), resolvido=resolvido,
+            autor=autor, criado_em=nota.get("created_at", "") or "", trecho=trecho,
         )
 
     @lru_cache(maxsize=512)
-    def _arquivo_bruto(self, projeto_id: int, caminho: str, ref: str) -> tuple[str, ...]:
+    def _ler_arquivo(self, projeto_id: int, caminho: str, ref: str) -> str | None:
         try:
             p = self._gl.projects.get(projeto_id, lazy=True)
             conteudo = p.files.raw(file_path=caminho, ref=ref)
         except GitlabError as erro:
             log.info("Não foi possível ler %s@%s: %s", caminho, ref, erro)
-            return ()
-        return tuple(bytes(conteudo).decode("utf-8", errors="replace").splitlines())
+            return None
+        return bytes(conteudo).decode("utf-8", errors="replace")
 
     def _trecho(self, projeto_id: int, caminho: str, ref: str, linha: int) -> str:
-        linhas = self._arquivo_bruto(projeto_id, caminho, ref)
-        if not linhas:
+        conteudo = self._ler_arquivo(projeto_id, caminho, ref)
+        if not conteudo:
             return ""
+        linhas = conteudo.splitlines()
         inicio = max(1, linha - _CONTEXTO_TRECHO)
         fim = min(len(linhas), linha + _CONTEXTO_TRECHO)
         return "\n".join(
             f"{'>' if n == linha else ' '}{n:>5} {linhas[n - 1]}" for n in range(inicio, fim + 1)
         )
+
+    # ---------- mapa técnico ----------
+    def obter_arvore(self, projeto: str) -> ArvoreProjeto:
+        p = self._projeto(projeto)
+        default_branch = p.default_branch
+        if not default_branch:
+            raise ValueError(f"Projeto {projeto} não tem branch padrão.")
+        branch = p.branches.get(default_branch)
+        sha = branch.commit["id"]
+        itens = p.repository_tree(ref=sha, recursive=True, iterator=True)
+        caminhos = tuple(i["path"] for i in itens if i.get("type") == "blob")
+        return ArvoreProjeto(sha=sha, caminhos=caminhos)
+
+    def obter_arquivo(self, projeto: str, caminho: str, ref: str) -> str | None:
+        return self._ler_arquivo(self._projeto(projeto).id, caminho, ref)

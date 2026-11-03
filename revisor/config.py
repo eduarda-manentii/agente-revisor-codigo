@@ -16,6 +16,10 @@ class ConfiguracaoInvalida(Exception):
     pass
 
 
+def _lista(valor: str) -> list[str]:
+    return [p.strip().strip("/") for p in valor.split(",") if p.strip().strip("/")]
+
+
 @dataclass(frozen=True)
 class Config:
     gitlab_url: str
@@ -25,8 +29,11 @@ class Config:
     anthropic_api_key: str
     claude_executavel: str
     modelo: str
-    revisor_alvo: str
+    grupos_treino: list[str]
     projetos_treino: list[str]
+    revisores_excluidos: frozenset[str]
+    min_comentarios_guia_micro: int
+    mapa_validade_dias: int
     treino_desde: str
     banco: Path
     pasta_perfis: Path
@@ -42,7 +49,7 @@ def carregar_config() -> Config:
     provedor = os.getenv("LLM_PROVEDOR", "claude-code").strip().lower()
     if provedor not in ("claude-code", "api"):
         raise ConfiguracaoInvalida("LLM_PROVEDOR deve ser 'claude-code' ou 'api'.")
-    obrigatorias = ["GITLAB_URL", "GITLAB_TOKEN", "REVISOR_ALVO", "PROJETOS_TREINO"]
+    obrigatorias = ["GITLAB_URL", "GITLAB_TOKEN"]
     if provedor == "api":
         obrigatorias.append("ANTHROPIC_API_KEY")
     faltando = [nome for nome in obrigatorias if not os.getenv(nome, "").strip()]
@@ -50,6 +57,10 @@ def carregar_config() -> Config:
         raise ConfiguracaoInvalida(
             "Preencha no arquivo .env: " + ", ".join(faltando) + " (veja o .env.example)."
         )
+    grupos = _lista(os.getenv("GRUPOS_TREINO", ""))
+    projetos = _lista(os.getenv("PROJETOS_TREINO", ""))
+    if not grupos and not projetos:
+        raise ConfiguracaoInvalida("Preencha GRUPOS_TREINO e/ou PROJETOS_TREINO no .env.")
     desde_padrao = (date.today() - timedelta(days=365)).isoformat()
     return Config(
         gitlab_url=os.environ["GITLAB_URL"].strip().rstrip("/"),
@@ -60,8 +71,13 @@ def carregar_config() -> Config:
         claude_executavel=os.getenv("CLAUDE_EXECUTAVEL", "claude").strip(),
         # Vazio = modelo padrão do Claude Code (claude-code) / obrigatório na API.
         modelo=os.getenv("LLM_MODELO", "" if provedor == "claude-code" else "claude-sonnet-5-5").strip(),
-        revisor_alvo=os.environ["REVISOR_ALVO"].strip().lstrip("@"),
-        projetos_treino=[p.strip() for p in os.environ["PROJETOS_TREINO"].split(",") if p.strip()],
+        grupos_treino=grupos,
+        projetos_treino=projetos,
+        revisores_excluidos=frozenset(
+            u.strip().lstrip("@") for u in os.getenv("REVISORES_EXCLUIDOS", "").split(",") if u.strip()
+        ),
+        min_comentarios_guia_micro=int(os.getenv("MIN_COMENTARIOS_GUIA_MICRO", "30")),
+        mapa_validade_dias=int(os.getenv("MAPA_VALIDADE_DIAS", "30")),
         treino_desde=os.getenv("TREINO_DESDE", desde_padrao).strip(),
         banco=RAIZ / os.getenv("BANCO", "dados/revisor.db"),
         pasta_perfis=RAIZ / "perfis",

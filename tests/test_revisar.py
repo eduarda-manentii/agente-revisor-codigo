@@ -2,7 +2,7 @@ import pytest
 
 from revisor.aplicacao.revisar import RevisarMR
 from revisor.dominio.apontamento import Severidade
-from revisor.dominio.modelos import Exemplo, StatusExecucao
+from revisor.dominio.modelos import GERAL, Exemplo, MapaProjeto, StatusExecucao
 from tests.fakes import (DIFF_COMPONENTE, DIFF_SERVICE, PERFIS, FakeGitLab, FakeLLM, arquivo,
                          dados_mr, sugestao)
 
@@ -92,7 +92,7 @@ def test_divide_em_lotes_quando_passa_do_orcamento(repo):
 
 
 def test_usa_guia_e_exemplos_parecidos_no_prompt(repo):
-    repo.salvar_guia("back", "GUIA: cobrar status do contexto", [], [])
+    repo.salvar_guia("back", GERAL, "GUIA: cobrar status do contexto", [], [])
     repo.salvar_exemplo(Exemplo("back", "p", 1, 99, "X.java", 5, "pedido.setStatus(request.getStatus())",
                                 "Nunca aceite status do request.", True))
     uc, _, llm = caso(repo, llm=FakeLLM([]))
@@ -119,3 +119,87 @@ def test_iniciar_valida_entrada(repo, url, perfil):
     uc, _, _ = caso(repo)
     with pytest.raises(ValueError):
         uc.iniciar(url, perfil)
+
+
+# ---------- R3/R5: guia geral + guia do micro + mapa técnico no prompt ----------
+
+def test_prompt_usa_guia_geral_guia_do_micro_e_mapa_do_projeto_do_mr(repo):
+    repo.salvar_guia("back", GERAL, "GUIA GERAL", [], [])
+    repo.salvar_guia("back", "grupo/api", "GUIA DO MICRO grupo/api", [], [])
+    repo.salvar_guia("back", "grupo/outro", "GUIA DE OUTRO MICRO", [], [])
+    repo.salvar_mapa(MapaProjeto(projeto="grupo/api", sha="s1", conteudo="MAPA TECNICO grupo/api",
+                                 arquivos_lidos=(), criado_em="2025-01-01T00:00:00"))
+    uc, _, llm = caso(repo, llm=FakeLLM([]))
+    revisao, _ = rodar(uc, repo)
+    sistema, _ = llm.chamadas[0]
+    assert "GUIA GERAL" in sistema
+    assert "GUIA DO MICRO grupo/api" in sistema
+    assert "GUIA DE OUTRO MICRO" not in sistema
+    assert "MAPA TECNICO grupo/api" in sistema
+    assert revisao.guia_versao == 1 and revisao.guia_micro_versao == 1
+    assert revisao.mapa_em == "2025-01-01T00:00:00"
+
+
+# ---------- R5: contexto completo (arquivo inteiro no head_sha do MR) ----------
+
+def test_arquivo_completo_entra_no_prompt_antes_do_diff(repo):
+    mr = dados_mr(arquivo("src/ContratoService.java", DIFF_SERVICE), head="headsha")
+    gitlab = FakeGitLab(mr=mr, conteudos_arquivo={
+        ("grupo/api", "src/ContratoService.java", "headsha"): "conteudo completo do arquivo",
+    })
+    uc, _, llm = caso(repo, gitlab=gitlab, llm=FakeLLM([]))
+    rodar(uc, repo)
+    _, usuario = llm.chamadas[0]
+    assert "# Arquivo completo (versão do MR): src/ContratoService.java" in usuario
+    assert "conteudo completo do arquivo" in usuario
+    assert usuario.index("# Arquivo completo") < usuario.index("# Diff a revisar")
+
+
+def test_arquivo_maior_que_40000_caracteres_vai_so_com_diff(repo):
+    mr = dados_mr(arquivo("src/ContratoService.java", DIFF_SERVICE), head="headsha")
+    gitlab = FakeGitLab(mr=mr, conteudos_arquivo={
+        ("grupo/api", "src/ContratoService.java", "headsha"): "x" * 40_001,
+    })
+    uc, _, llm = caso(repo, gitlab=gitlab, llm=FakeLLM([]))
+    rodar(uc, repo)
+    _, usuario = llm.chamadas[0]
+    assert "# Arquivo completo" not in usuario
+
+
+# ---------- R6: "por quê" — motivo e fontes verificadas ----------
+
+def test_fonte_de_comentario_confirmada_aparece_no_apontamento(repo):
+    repo.salvar_exemplo(Exemplo("back", "grupo/api", 1, 55, "X.java", 1, "t", "c", False))
+    uc, _, _ = caso(repo, llm=FakeLLM([
+        sugestao(motivo="por causa disso",
+                 fontes={"comentarios": [55], "padrao_guia": "", "regra_perfil": ""})
+    ]))
+    _, aps = rodar(uc, repo)
+    assert aps[0].motivo == "por causa disso"
+    assert aps[0].fontes.comentarios == (55,)
+    assert not aps[0].fontes.sem_precedente
+
+
+def test_fonte_de_comentario_inventada_fica_nao_confirmada(repo):
+    uc, _, _ = caso(repo, llm=FakeLLM([
+        sugestao(fontes={"comentarios": [999], "padrao_guia": "", "regra_perfil": ""})
+    ]))
+    _, aps = rodar(uc, repo)
+    assert aps[0].fontes.comentarios == ()
+    assert aps[0].fontes.comentarios_nao_confirmados == (999,)
+    assert aps[0].fontes.sem_precedente
+
+
+def test_padrao_do_guia_confirmado_so_se_texto_existir_no_guia(repo):
+    repo.salvar_guia("back", GERAL, "### Mass assignment\nFontes: #1", [], [])
+    uc, _, _ = caso(repo, llm=FakeLLM([
+        sugestao(fontes={"comentarios": [], "padrao_guia": "Mass assignment", "regra_perfil": ""})
+    ]))
+    _, aps = rodar(uc, repo)
+    assert aps[0].fontes.padrao_confirmado
+
+
+def test_sem_nenhuma_fonte_citada_e_sem_precedente(repo):
+    uc, _, _ = caso(repo, llm=FakeLLM([sugestao()]))
+    _, aps = rodar(uc, repo)
+    assert aps[0].fontes.sem_precedente

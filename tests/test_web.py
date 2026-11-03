@@ -7,24 +7,29 @@ from fastapi.testclient import TestClient
 from revisor.aplicacao.revisar import RevisarMR
 from revisor.aplicacao.treinar import TreinarPerfil
 from revisor.aplicacao.triagem_publicacao import PublicarAprovados, TriarApontamento
-from revisor.dominio.apontamento import Status
+from revisor.dominio.apontamento import Apontamento, Severidade, Status
+from revisor.dominio.modelos import GERAL, Exemplo, Revisao, StatusExecucao
 from revisor.web.app import Servicos, criar_app
 from tests.fakes import PERFIS, FakeGitLab, FakeLLM, sugestao
 
 URL_MR = "https://gitlab.empresa.com/g/api/-/merge_requests/3"
 
 
+def servicos(repo, gitlab, llm) -> Servicos:
+    return Servicos(
+        repo=repo, perfis=PERFIS, gitlab_url="https://gitlab.empresa.com",
+        revisar=RevisarMR(gitlab, llm, repo, PERFIS, "gitlab.empresa.com"),
+        triar=TriarApontamento(repo),
+        publicar=PublicarAprovados(gitlab, repo),
+        treinar=TreinarPerfil(gitlab, FakeLLM(), repo, PERFIS, [], ["g/api"], set(), "2025-01-01"),
+    )
+
+
 @pytest.fixture
 def ambiente(repo):
     gitlab = FakeGitLab()
     llm = FakeLLM([sugestao(linha=12, comentario="Status do request"), sugestao(linha=13, comentario="Outro")])
-    s = Servicos(
-        repo=repo, perfis=PERFIS,
-        revisar=RevisarMR(gitlab, llm, repo, PERFIS, "gitlab.empresa.com"),
-        triar=TriarApontamento(repo),
-        publicar=PublicarAprovados(gitlab, repo),
-        treinar=TreinarPerfil(gitlab, FakeLLM(), repo, PERFIS, "fulana", ["g/api"], "2025-01-01"),
-    )
+    s = servicos(repo, gitlab, llm)
     return TestClient(criar_app(s)), repo, gitlab
 
 
@@ -72,3 +77,52 @@ def test_treinar_pela_tela(ambiente):
     assert "Treino do perfil back iniciado" in resposta.text
     assert repo.ultimo_treino("back").status == "CONCLUIDA"
     assert "Ainda não há guia" in cliente.get("/perfis/back/guia").text  # sem comentários, sem guia
+
+
+def test_pagina_de_mapas_responde_200(ambiente):
+    cliente, _, _ = ambiente
+    resposta = cliente.get("/mapas")
+    assert resposta.status_code == 200
+    assert "mapeado" in resposta.text.lower()
+
+
+def test_pagina_de_guia_com_abas_e_escopo_de_micro_responde_200(ambiente):
+    cliente, repo, _ = ambiente
+    repo.salvar_guia("back", GERAL, "GUIA GERAL AQUI", [], [])
+    repo.salvar_guia("back", "g/api", "GUIA DO MICRO AQUI", [], [])
+    geral = cliente.get("/perfis/back/guia")
+    assert geral.status_code == 200 and "GUIA GERAL AQUI" in geral.text and "g/api" in geral.text
+    micro = cliente.get("/perfis/back/guia?escopo=g/api")
+    assert micro.status_code == 200 and "GUIA DO MICRO AQUI" in micro.text
+
+
+def test_revisao_mostra_motivo_fonte_confirmada_com_link_e_selo_sem_precedente(repo):
+    repo.salvar_exemplo(Exemplo("back", "g/api", 1, 77, "X.java", 1, "trecho antigo",
+                                "Nunca aceite status do request.", True, autor="fulana",
+                                criado_em="2025-06-01T00:00:00Z"))
+    gitlab = FakeGitLab()
+    llm = FakeLLM([
+        sugestao(linha=12, comentario="Com fonte", motivo="por isso é um problema concreto",
+                 fontes={"comentarios": [77], "padrao_guia": "", "regra_perfil": ""}),
+        sugestao(linha=13, comentario="Sem fonte nenhuma"),
+    ])
+    cliente = TestClient(criar_app(servicos(repo, gitlab, llm)))
+
+    resposta = cliente.post("/revisoes", data={"url": URL_MR, "perfil": "back"})
+    assert "por isso é um problema concreto" in resposta.text
+    assert "#note_77" in resposta.text
+    assert "fulana" in resposta.text
+    assert "Sem precedente na equipe" in resposta.text
+
+
+def test_apontamento_antigo_sem_fontes_mostra_aviso_de_versao_anterior(repo):
+    revisao_id = repo.criar_revisao(Revisao(URL_MR, "g/api", 3, "back", status=StatusExecucao.CONCLUIDA))
+    repo.adicionar_apontamentos([
+        Apontamento(revisao_id, "X.java", "X.java", 1, None, Severidade.P2, 6, "texto", "trecho")
+    ])
+    gitlab = FakeGitLab()
+    cliente = TestClient(criar_app(servicos(repo, gitlab, FakeLLM())))
+
+    resposta = cliente.get(f"/revisoes/{revisao_id}")
+    assert "Reviews feitos antes desta versão não têm essa informação" in resposta.text
+    assert "Sem precedente na equipe" not in resposta.text

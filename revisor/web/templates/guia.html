@@ -1,8 +1,14 @@
 {% extends "base.html" %}
 {% block conteudo %}
 <p class="caminho"><a href="/">Início</a> / guia {{ perfil.nome }}</p>
+<nav class="abas" aria-label="Escopo do guia">
+  <a class="{{ 'aba-ativa' if escopo == GERAL else '' }}" href="/perfis/{{ perfil.nome }}/guia">Geral</a>
+  {% for e in escopos %}
+  <a class="{{ 'aba-ativa' if escopo == e else '' }}" href="/perfis/{{ perfil.nome }}/guia?escopo={{ e }}">{{ e.split('/')[-1] }}</a>
+  {% endfor %}
+</nav>
 {% if guia %}
-<h1>Guia do revisor {{ perfil.nome }}, versão {{ guia.versao }}</h1>
+<h1>Guia do revisor {{ perfil.nome }} — {{ "geral" if escopo == GERAL else escopo }}, versão {{ guia.versao }}</h1>
 <p class="meta">Gerado em {{ guia.criado_em[:16].replace("T", " ") }}, com {{ guia.exemplos_usados }} comentários incorporados até aqui.</p>
 <div class="guia-layout">
   <pre class="guia">{{ guia.conteudo }}</pre>
@@ -11,15 +17,32 @@
     <h2>Versões</h2>
     <ol reversed>
       {% for v in versoes %}
-      <li>{% if v.versao == guia.versao %}<strong>v{{ v.versao }}</strong>{% else %}<a href="?versao={{ v.versao }}">v{{ v.versao }}</a>{% endif %}
+      <li>{% if v.versao == guia.versao %}<strong>v{{ v.versao }}</strong>{% else %}<a href="?escopo={{ escopo }}&versao={{ v.versao }}">v{{ v.versao }}</a>{% endif %}
         <span class="ajuda">{{ v.exemplos_usados }} coment.</span></li>
       {% endfor %}
     </ol>
   </nav>
   {% endif %}
 </div>
+{% if escopo == GERAL and contagem_projetos %}
+<section class="bloco">
+  <h2>Comentários por microserviço</h2>
+  <table class="tabela">
+    <thead><tr><th>Projeto</th><th>Total</th><th></th></tr></thead>
+    <tbody>
+    {% for projeto, total in contagem_projetos %}
+      <tr>
+        <td>{{ projeto }}</td>
+        <td>{{ total }}</td>
+        <td>{% if projeto in escopos %}<a href="/perfis/{{ perfil.nome }}/guia?escopo={{ projeto }}">ver guia próprio</a>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
 {% else %}
 <h1>Guia do revisor {{ perfil.nome }}</h1>
-<p class="aviso">Ainda não há guia. Volte ao início e clique em Treinar.</p>
+<p class="aviso">Ainda não há guia{{ "" if escopo == GERAL else " próprio deste microserviço" }}. Volte ao início e clique em Treinar.</p>
 {% endif %}
 {% endblock %}

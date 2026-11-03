@@ -14,8 +14,8 @@ def test_comentario_real_nao_e_ruido():
     assert not e_ruido("Esse status vem do request, deveria vir do contexto.")
 
 
-def ex(trecho: str, resolvido: bool = False, note_id: int = 1) -> Exemplo:
-    return Exemplo("back", "p", 1, note_id, "A.java", 1, trecho, "comentário", resolvido)
+def ex(trecho: str, resolvido: bool = False, note_id: int = 1, projeto: str = "p") -> Exemplo:
+    return Exemplo("back", projeto, 1, note_id, "A.java", 1, trecho, "comentário", resolvido)
 
 
 def test_selecao_por_similaridade_e_desempate_por_acolhimento():
@@ -31,6 +31,19 @@ def test_selecao_respeita_k_e_alvo_vazio():
     exemplos = [ex("setStatus getStatus", note_id=i) for i in range(5)]
     assert len(selecionar_exemplos("setStatus", exemplos, k=2)) == 2
     assert selecionar_exemplos("", exemplos, k=2) == []
+
+
+def test_exemplo_do_mesmo_projeto_ganha_de_outro_com_mesma_similaridade():
+    alvo = "contrato.setStatus(request.getStatus())"
+    do_mr = ex("pedido.setStatus(request.getStatus())", note_id=1, projeto="g/divida")
+    de_outro = ex("pedido.setStatus(request.getStatus())", note_id=2, projeto="g/cobranca")
+    escolhidos = selecionar_exemplos(alvo, [de_outro, do_mr], k=5, projeto_mr="g/divida")
+    assert escolhidos == [do_mr, de_outro]
+
+
+def test_bonus_de_projeto_nao_traz_exemplo_sem_similaridade_nenhuma():
+    sem_relacao = ex("logger.info(mensagem)", note_id=1, projeto="g/divida")
+    assert selecionar_exemplos("setStatus", [sem_relacao], k=5, projeto_mr="g/divida") == []
 
 
 def test_parse_saida_aceita_cerca_markdown_e_descarta_itens_invalidos():
@@ -55,6 +68,29 @@ def test_parse_saida_sem_json_falha():
 
 def test_parse_lista_vazia():
     assert parse_saida_llm("[]") == ([], 0)
+
+
+def test_parse_saida_aceita_item_sem_motivo_nem_fontes():
+    texto = '[{"arquivo": "A.java", "linha": 3, "severidade": "P1", "confianca": 7, "comentario": "c"}]'
+    validos, descartados = parse_saida_llm(texto)
+    assert descartados == 0
+    assert validos[0].motivo == "" and validos[0].fontes_comentarios == ()
+    assert validos[0].fontes_padrao_guia == "" and validos[0].fontes_regra_perfil == ""
+
+
+def test_parse_saida_aceita_ids_como_int_string_e_hash():
+    texto = (
+        '[{"arquivo": "A.java", "linha": 3, "severidade": "P1", "confianca": 7, "comentario": "c", '
+        '"motivo": "explicação", '
+        '"fontes": {"comentarios": [123, "456", "#789", "abc"], '
+        '"padrao_guia": "Título do padrão", "regra_perfil": "trecho exato"}}]'
+    )
+    validos, descartados = parse_saida_llm(texto)
+    assert descartados == 0
+    assert validos[0].motivo == "explicação"
+    assert validos[0].fontes_comentarios == (123, 456, 789)  # "abc" descartado
+    assert validos[0].fontes_padrao_guia == "Título do padrão"
+    assert validos[0].fontes_regra_perfil == "trecho exato"
 
 
 def test_parse_url_mr_com_subgrupos():
