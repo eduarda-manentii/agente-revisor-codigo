@@ -61,6 +61,12 @@ Abra http://127.0.0.1:8765 no navegador.
 4. Para cada apontamento: abra o bloco **"Por quê"** para ver a justificativa e as fontes, edite o texto se quiser e clique em **Aprovar**, ou escolha o motivo e clique em **Rejeitar**.
 5. Clique em **Publicar aprovados no MR**.
 
+Ao concluir, a tela mostra uma **Prontidão** de 0 a 100 (100 = nada em aberto; calculada pela
+severidade dos apontamentos ainda não rejeitados — não é um número que o modelo inventa, então não
+balança de review pra review sem o código mudar). Se já existir um review anterior do mesmo MR, ela
+também mostra quantos apontamentos foram **resolvidos**, quantos **se repetem** e quantos são
+**novos** — o jeito de saber se está convergindo ou se o agente fica achando coisa nova pra sempre.
+
 ### Ajustar os revisores
 
 Cada revisor é um arquivo em `perfis/`:

@@ -182,6 +182,34 @@ def test_reiniciar_cria_nova_revisao_para_o_mesmo_mr(ambiente):
     assert nova.mr_url == URL_MR and nova.status == StatusExecucao.CONCLUIDA  # já rodou (background síncrono no teste)
 
 
+def test_tela_de_revisao_mostra_prontidao_sem_review_anterior(ambiente):
+    cliente, repo, _ = ambiente
+    resposta = cliente.post("/revisoes", data={"url": URL_MR, "perfil": "back"})
+    assert "Prontidão:" in resposta.text
+    assert "Comparado com o" not in resposta.text
+
+
+def test_tela_de_revisao_mostra_comparacao_com_review_anterior_do_mesmo_mr(repo):
+    gitlab = FakeGitLab()
+    anterior_id = repo.criar_revisao(Revisao(URL_MR, "g/api", 3, "back", status=StatusExecucao.CONCLUIDA))
+    repo.adicionar_apontamentos([
+        Apontamento(anterior_id, "X.java", "X.java", 12, None, Severidade.P1, 8, "Problema antigo", "t")
+    ])
+    llm = FakeLLM([sugestao(linha=12, comentario="Status do request")])
+    cliente = TestClient(criar_app(servicos(repo, gitlab, llm)))
+
+    resposta = cliente.post("/revisoes", data={"url": URL_MR, "perfil": "back"})
+    assert "Comparado com o" in resposta.text
+    assert "1 resolvido(s) · 0 repetido(s) · 1 novo(s)" in resposta.text
+
+
+def test_prontidao_nao_aparece_quando_revisao_falha(repo):
+    revisao_id = repo.criar_revisao(Revisao(URL_MR, "g/api", 3, "back", status=StatusExecucao.ERRO))
+    cliente = TestClient(criar_app(servicos(repo, FakeGitLab(), FakeLLM())))
+    resposta = cliente.get(f"/revisoes/{revisao_id}")
+    assert "Prontidão:" not in resposta.text
+
+
 def test_reload_da_pagina_mantem_a_mesma_etapa_persistida(ambiente):
     cliente, repo, _ = ambiente
     resposta = cliente.post("/revisoes", data={"url": URL_MR, "perfil": "back"})

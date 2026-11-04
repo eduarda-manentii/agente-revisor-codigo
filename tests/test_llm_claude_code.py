@@ -50,6 +50,8 @@ def test_sem_modelo_usa_padrao_do_claude_code():
     (Executor(json.dumps({"result": "Not logged in", "is_error": True}), returncode=1), "Not logged in"),
     (Executor("lixo", returncode=2, stderr="unknown option"), "unknown option"),
     (Executor(json.dumps({"sem": "result"})), "result"),
+    (Executor(json.dumps({"is_error": True, "subtype": "error_rate_limit"}), returncode=1),
+     "error_rate_limit"),
     (Executor(excecao=subprocess.TimeoutExpired("claude", 1)), "não respondeu"),
 ])
 def test_erros_viram_mensagem_clara(executor, trecho):

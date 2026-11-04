@@ -163,3 +163,9 @@ textarea { width: 100%; resize: vertical; }
 .por-que summary { cursor: pointer; font-weight: 600; }
 .por-que .fonte { margin-top: .6rem; padding-top: .6rem; border-top: 1px solid var(--linha); }
 .selo-sem-precedente { display: inline-block; font-size: .85rem; color: var(--tinta-suave); font-style: italic; }
+
+.prontidao { border-left: 4px solid var(--p2); background: var(--superficie); padding: .75rem 1rem; margin-bottom: 1rem; }
+.prontidao p { margin: 0 0 .3rem; }
+.prontidao-alta { border-left-color: var(--aprovar); }
+.prontidao-media { border-left-color: var(--p1); }
+.prontidao-baixa { border-left-color: var(--p0); }

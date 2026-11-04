@@ -159,6 +159,18 @@ def test_revisao_guarda_etapa_e_heartbeat(repo):
     assert lida.atualizado_em == "2026-01-01T10:00:00+00:00"
 
 
+def test_obter_revisao_anterior_do_mesmo_mr(repo):
+    r1 = repo.criar_revisao(Revisao("u", "g/p", 7, "back", status=StatusExecucao.CONCLUIDA))
+    r2 = repo.criar_revisao(Revisao("u", "g/p", 7, "back", status=StatusExecucao.ERRO))
+    r3 = repo.criar_revisao(Revisao("u", "g/p", 7, "back", status=StatusExecucao.CONCLUIDA))
+    repo.criar_revisao(Revisao("u", "g/outro", 7, "back", status=StatusExecucao.CONCLUIDA))  # outro projeto
+    repo.criar_revisao(Revisao("u", "g/p", 9, "back", status=StatusExecucao.CONCLUIDA))  # outro MR
+
+    assert repo.obter_revisao_anterior("g/p", 7, r1) is None  # nada antes da primeira
+    assert repo.obter_revisao_anterior("g/p", 7, r2).id == r1  # pula a ERRO (r2) e acha a concluída
+    assert repo.obter_revisao_anterior("g/p", 7, r3).id == r1  # a mais recente concluída antes de r3
+
+
 def test_historico_de_eventos_preserva_ordem(repo):
     revisao_id = repo.criar_revisao(Revisao("u", "g/p", 1, "back"))
     assert repo.listar_eventos(revisao_id) == []

@@ -204,6 +204,15 @@ class RepositorioSQLite:
             linhas = con.execute("SELECT * FROM revisoes ORDER BY id DESC LIMIT ?", (limite,)).fetchall()
         return [self._para_revisao(r) for r in linhas]
 
+    def obter_revisao_anterior(self, projeto: str, mr_iid: int, antes_de: int) -> Revisao | None:
+        with self._conexao() as con:
+            linha = con.execute(
+                "SELECT * FROM revisoes WHERE projeto = ? AND mr_iid = ? AND id < ? AND status = 'CONCLUIDA' "
+                "ORDER BY id DESC LIMIT 1",
+                (projeto, mr_iid, antes_de),
+            ).fetchone()
+        return self._para_revisao(linha) if linha else None
+
     # ---------- apontamentos ----------
     @staticmethod
     def _valores_apontamento(ap: Apontamento) -> dict:

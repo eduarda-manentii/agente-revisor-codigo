@@ -45,7 +45,8 @@
   </form>
 {% elif revisao.status == "ERRO" %}
   <p class="aviso aviso-erro">
-    O review falhou na etapa "{{ revisao.etapa }}": {{ revisao.erro }} (duração total {{ duracao_total }}).
+    O review falhou na etapa "{{ revisao.etapa or "antes de começar" }}": {{ revisao.erro }}
+    (duração total {{ duracao_total }}).
   </p>
 {% elif revisao.status == "CANCELADA" %}
   <p class="aviso">
@@ -56,6 +57,19 @@
   </p>
 {% else %}
   {% if revisao.nota %}<p class="aviso">{{ revisao.nota }}</p>{% endif %}
+  {% if prontidao is defined and prontidao is not none %}
+  <div class="prontidao prontidao-{{ 'alta' if prontidao >= 80 else ('media' if prontidao >= 50 else 'baixa') }}">
+    <p><strong>Prontidão: {{ prontidao }}/100</strong>
+      <span class="ajuda">(100 = nada em aberto; cada P0/P1/P2 pendente pesa conforme a severidade)</span>
+    </p>
+    {% if comparacao %}
+    <p class="ajuda">
+      Comparado com o <a href="/revisoes/{{ revisao_anterior.id }}">review anterior deste MR</a>:
+      {{ comparacao.resolvidos }} resolvido(s) · {{ comparacao.repetidos }} repetido(s) · {{ comparacao.novos }} novo(s)
+    </p>
+    {% endif %}
+  </div>
+  {% endif %}
   {% if total %}
   <div class="barra-publicar">
     <p>

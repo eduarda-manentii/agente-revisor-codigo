@@ -73,7 +73,8 @@ class LLMClaudeCode:
             detalhe = (processo.stderr or processo.stdout or "sem saída").strip()[:500]
             raise ErroClaudeCode(f"Claude Code falhou (código {processo.returncode}): {detalhe}")
         if processo.returncode != 0 or dados.get("is_error"):
-            detalhe = str(dados.get("result") or processo.stderr or "erro desconhecido")[:500]
+            # Sem "result" nem stderr (ex.: limite de uso), o JSON inteiro ainda ajuda a diagnosticar.
+            detalhe = str(dados.get("result") or processo.stderr or json.dumps(dados))[:500]
             raise ErroClaudeCode(f"Claude Code falhou: {detalhe}")
         resultado = dados.get("result")
         if not isinstance(resultado, str):

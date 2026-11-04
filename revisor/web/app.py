@@ -21,6 +21,7 @@ from revisor.aplicacao.triagem_publicacao import PublicarAprovados, TriarApontam
 from revisor.dominio.apontamento import MotivoRejeicao, Status, TransicaoInvalida
 from revisor.dominio.modelos import GERAL, Perfil, StatusExecucao
 from revisor.dominio.progresso import esta_travado, formatar_duracao, transicionar
+from revisor.dominio.prontidao import calcular_prontidao, comparar_com_anterior
 from revisor.portas import Repositorio
 
 _PASTA = Path(__file__).parent
@@ -126,12 +127,23 @@ def criar_app(s: Servicos) -> FastAPI:
         fim = revisao.atualizado_em if revisao.status not in (
             StatusExecucao.PENDENTE, StatusExecucao.PROCESSANDO
         ) else agora.isoformat(timespec="seconds")
+
+        prontidao = comparacao = revisao_anterior = None
+        if revisao.status == StatusExecucao.CONCLUIDA:
+            prontidao = calcular_prontidao(apontamentos)
+            revisao_anterior = s.repo.obter_revisao_anterior(revisao.projeto, revisao.mr_iid, revisao.id)
+            if revisao_anterior:
+                comparacao = comparar_com_anterior(
+                    apontamentos, s.repo.listar_apontamentos(revisao_anterior.id)
+                )
+
         return render(request, "revisao.html", revisao=revisao, por_arquivo=por_arquivo,
                       contagem=contagem, total=len(apontamentos), publicaveis=publicaveis,
                       fontes_exemplos=fontes_exemplos, eventos=s.repo.listar_eventos(revisao_id),
                       travado=travado, limite_inatividade=s.limite_inatividade_segundos,
                       duracao_total=_duracao(revisao.criada_em, fim),
-                      duracao_etapa=_duracao(revisao.etapa_iniciada_em, fim))
+                      duracao_etapa=_duracao(revisao.etapa_iniciada_em, fim),
+                      prontidao=prontidao, comparacao=comparacao, revisao_anterior=revisao_anterior)
 
     @app.get("/revisoes/{revisao_id}/eventos")
     async def eventos_revisao(revisao_id: int):
