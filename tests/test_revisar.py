@@ -1,20 +1,26 @@
-import json
-
 import pytest
 
+from revisor.aplicacao.executar_agentes import ExecutarAgentes
 from revisor.aplicacao.revisar import RevisarMR
+from revisor.dominio.agentes import ResultadoAgente
 from revisor.dominio.apontamento import Severidade
-from revisor.dominio.modelos import GERAL, Exemplo, MapaProjeto, StatusExecucao
-from tests.fakes import (DIFF_COMPONENTE, DIFF_SERVICE, PERFIS, FakeGitLab, FakeLLM, arquivo,
-                         dados_mr, sugestao)
+from revisor.dominio.modelos import GERAL, Exemplo, StatusExecucao
+from tests.fakes import (AGENTES, DIFF_COMPONENTE, DIFF_SERVICE, PERFIS, FakeCoordenador, FakeGitLab,
+                         FakePortaAgente, FakeWorkspace, achado, arquivo, dados_mr)
 
 URL = "https://gitlab.empresa.com/grupo/api/-/merge_requests/7"
 
 
-def caso(repo, gitlab=None, llm=None, **kw):
+def caso(repo, gitlab=None, workspace=None, agente=None, coordenador=None, agentes=None, **kw):
     gitlab = gitlab or FakeGitLab()
-    llm = llm or FakeLLM([])
-    return RevisarMR(gitlab, llm, repo, PERFIS, "gitlab.empresa.com", **kw), gitlab, llm
+    workspace = workspace if workspace is not None else FakeWorkspace()
+    agente = agente if agente is not None else FakePortaAgente(respostas={
+        "qualidade": ResultadoAgente(agente="qualidade", achados=(achado(),), modelo_usado="sonnet"),
+    })
+    coordenador = coordenador if coordenador is not None else FakeCoordenador()
+    executar_agentes = ExecutarAgentes(agente, repo, agentes or AGENTES, **kw)
+    uc = RevisarMR(gitlab, repo, PERFIS, "gitlab.empresa.com", workspace, executar_agentes, coordenador)
+    return uc, gitlab, agente, coordenador
 
 
 def rodar(uc, repo, perfil="back"):
@@ -23,93 +29,64 @@ def rodar(uc, repo, perfil="back"):
     return repo.obter_revisao(revisao_id), repo.listar_apontamentos(revisao_id)
 
 
-def test_gera_apontamento_valido_com_trecho_e_shas(repo):
-    uc, _, _ = caso(repo, llm=FakeLLM([sugestao()]))
+# ---------- fluxo feliz: agentes -> pré-consolidação -> coordenador -> apontamento ----------
+
+def test_gera_apontamento_com_origens_trecho_e_shas(repo):
+    uc, _, _, _ = caso(repo)
     revisao, aps = rodar(uc, repo)
     assert revisao.status == StatusExecucao.CONCLUIDA
     assert (revisao.base_sha, revisao.start_sha, revisao.head_sha) == ("b1", "s1", "h1")
     assert len(aps) == 1
     assert aps[0].linha == 12 and aps[0].linha_antiga is None  # linha adicionada
     assert ">   12 +" in aps[0].trecho
+    assert aps[0].origens == "qualidade"
+    assert aps[0].texto_original == "Reescrito pelo coordenador (grupo 1)"  # tom do coordenador, não do agente
 
 
 def test_linha_de_contexto_guarda_linha_antiga(repo):
-    uc, _, _ = caso(repo, llm=FakeLLM([sugestao(linha=14)]))
+    ag = FakePortaAgente(respostas={
+        "qualidade": ResultadoAgente(agente="qualidade", achados=(achado(linha=14),)),
+    })
+    uc, _, _, _ = caso(repo, agente=ag)
     _, aps = rodar(uc, repo)
     assert aps[0].linha_antiga == 12
 
 
-def test_descarta_alucinacao_baixa_confianca_e_duplicata(repo):
-    respostas = [
-        sugestao(),                                  # válido
-        sugestao(),                                  # duplicado
-        sugestao(linha=999),                         # linha fora do diff
-        sugestao(arquivo="Inexistente.java"),        # arquivo fora do lote
-        sugestao(linha=13, confianca=3),             # abaixo da confiança mínima
-    ]
-    uc, _, _ = caso(repo, llm=FakeLLM(respostas))
+def test_achado_em_linha_fora_do_diff_vira_descarte_em_vez_de_apontamento(repo):
+    ag = FakePortaAgente(respostas={
+        "qualidade": ResultadoAgente(agente="qualidade", achados=(achado(linha=999),)),
+    })
+    uc, _, _, _ = caso(repo, agente=ag)
     revisao, aps = rodar(uc, repo)
-    assert len(aps) == 1
-    assert revisao.descartados == 4
-
-
-def test_ordena_por_severidade_e_corta_no_maximo_do_perfil(repo):
-    respostas = [sugestao(linha=11, severidade="P2", comentario=f"c{i}") for i in range(12)]
-    respostas.append(sugestao(linha=12, severidade="P0", comentario="crítico"))
-    uc, _, _ = caso(repo, llm=FakeLLM(respostas))
-    _, aps = rodar(uc, repo)
-    assert len(aps) == 10  # max_apontamentos do PERFIL_BACK
-    assert any(a.severidade == Severidade.P0 for a in aps)
+    assert aps == []
+    descartados = repo.listar_descartes(revisao.id)
+    assert len(descartados) == 1
+    assert descartados[0].motivo == "Linha fora do diff."
 
 
 def test_filtra_arquivos_pelo_perfil(repo):
     mr = dados_mr(arquivo("src/ContratoService.java", DIFF_SERVICE), arquivo("lista.component.ts", DIFF_COMPONENTE))
-    uc, _, llm = caso(repo, gitlab=FakeGitLab(mr=mr), llm=FakeLLM([]))
+    ag = FakePortaAgente()
+    uc, _, _, _ = caso(repo, gitlab=FakeGitLab(mr=mr), agente=ag)
     rodar(uc, repo, perfil="front")
-    _, prompt_usuario = llm.chamadas[0]
-    assert "lista.component.ts" in prompt_usuario
-    assert "ContratoService.java" not in prompt_usuario
+    assert ag.chamadas == ["qualidade"]  # agente rodou, mas só pros arquivos do perfil front
 
 
-def test_sem_arquivos_do_perfil_nao_chama_llm(repo):
+def test_sem_arquivos_do_perfil_nao_roda_agente(repo):
     mr = dados_mr(arquivo("lista.component.ts", DIFF_COMPONENTE))
-    uc, _, llm = caso(repo, gitlab=FakeGitLab(mr=mr))
+    ag = FakePortaAgente()
+    uc, _, _, _ = caso(repo, gitlab=FakeGitLab(mr=mr), agente=ag)
     revisao, _ = rodar(uc, repo, perfil="back")
-    assert llm.chamadas == []
+    assert ag.chamadas == []
     assert revisao.status == StatusExecucao.CONCLUIDA and "Nenhum arquivo" in revisao.nota
 
 
 def test_arquivo_removido_e_ignorado(repo):
     mr = dados_mr(arquivo("Velho.java", DIFF_SERVICE, removido=True))
-    uc, _, llm = caso(repo, gitlab=FakeGitLab(mr=mr))
+    ag = FakePortaAgente()
+    uc, _, _, _ = caso(repo, gitlab=FakeGitLab(mr=mr), agente=ag)
     rodar(uc, repo)
-    assert llm.chamadas == []
-
-
-def test_divide_em_lotes_quando_passa_do_orcamento(repo):
-    mr = dados_mr(arquivo("A.java", DIFF_SERVICE), arquivo("B.java", DIFF_SERVICE))
-    uc, _, llm = caso(repo, gitlab=FakeGitLab(mr=mr), llm=FakeLLM([], []), max_caracteres_lote=50)
-    rodar(uc, repo)
-    assert len(llm.chamadas) == 2
-
-
-def test_usa_guia_e_exemplos_parecidos_no_prompt(repo):
-    repo.salvar_guia("back", GERAL, "GUIA: cobrar status do contexto", [], [])
-    repo.salvar_exemplo(Exemplo("back", "p", 1, 99, "X.java", 5, "pedido.setStatus(request.getStatus())",
-                                "Nunca aceite status do request.", True))
-    uc, _, llm = caso(repo, llm=FakeLLM([]))
-    revisao, _ = rodar(uc, repo)
-    sistema, usuario = llm.chamadas[0]
-    assert "GUIA: cobrar status do contexto" in sistema
-    assert "Nunca aceite status do request." in usuario
-    assert revisao.guia_versao == 1
-
-
-def test_resposta_invalida_do_llm_marca_erro(repo):
-    uc, _, _ = caso(repo, llm=FakeLLM("desculpe, não consigo"))
-    revisao, _ = rodar(uc, repo)
-    assert revisao.status == StatusExecucao.ERRO
-    assert "JSON" in revisao.erro
+    assert ag.chamadas == []
 
 
 @pytest.mark.parametrize("url,perfil", [
@@ -118,150 +95,278 @@ def test_resposta_invalida_do_llm_marca_erro(repo):
     ("não é url", "back"),
 ])
 def test_iniciar_valida_entrada(repo, url, perfil):
-    uc, _, _ = caso(repo)
+    uc, _, _, _ = caso(repo)
     with pytest.raises(ValueError):
         uc.iniciar(url, perfil)
 
 
-# ---------- R3/R5: guia geral + guia do micro + mapa técnico no prompt ----------
+# ---------- R3: agentes especialistas ----------
 
-def test_prompt_usa_guia_geral_guia_do_micro_e_mapa_do_projeto_do_mr(repo):
+def test_agente_falho_nao_derruba_o_review_e_fica_registrado_no_historico(repo):
+    ag = FakePortaAgente(respostas={
+        "qualidade": ResultadoAgente(agente="qualidade", erro="deu ruim"),
+    })
+    uc, _, _, _ = caso(repo, agente=ag)
+    revisao, aps = rodar(uc, repo)
+    assert revisao.status == StatusExecucao.CONCLUIDA
+    assert aps == []
+    assert "Nenhum achado" in revisao.nota and "1 agente(s) falharam" in revisao.nota
+    eventos = [e.etapa for e in repo.listar_eventos(revisao.id)]
+    assert any("Agente qualidade falhou: deu ruim" in e for e in eventos)
+
+
+def test_estilo_revisor_recebe_guia_e_exemplos(repo):
+    from dataclasses import replace
+    from revisor.dominio.modelos import Agente
+    repo.salvar_guia("back", GERAL, "GUIA: cobrar status do contexto", [], [])
+    repo.salvar_exemplo(Exemplo("back", "p", 1, 99, "X.java", 5, "pedido.setStatus(request.getStatus())",
+                                "Nunca aceite status do request.", True))
+    ag = FakePortaAgente(respostas={
+        "estilo-revisor": ResultadoAgente(agente="estilo-revisor", achados=(achado(categoria="estilo-revisor"),)),
+    })
+    agentes = {**AGENTES, "estilo-revisor": Agente(nome="estilo-revisor", instrucoes="instr")}
+    perfis = {**PERFIS, "back": replace(PERFIS["back"], agentes_por_risco={"TRIVIAL": ("estilo-revisor",)})}
+    uc, _, _, _ = caso(repo, agente=ag, agentes=agentes)
+    uc._perfis = perfis
+    revisao, aps = rodar(uc, repo)
+    assert revisao.status == StatusExecucao.CONCLUIDA
+    assert len(aps) == 1
+    usuario = ag.usuarios["estilo-revisor"]
+    assert "GUIA: cobrar status do contexto" in usuario
+    assert "Nunca aceite status do request." in usuario
+
+
+# ---------- R4: coordenador ----------
+
+def test_coordenador_recebe_grupos_com_guia_geral_e_micro(repo):
     repo.salvar_guia("back", GERAL, "GUIA GERAL", [], [])
     repo.salvar_guia("back", "grupo/api", "GUIA DO MICRO grupo/api", [], [])
     repo.salvar_guia("back", "grupo/outro", "GUIA DE OUTRO MICRO", [], [])
-    repo.salvar_mapa(MapaProjeto(projeto="grupo/api", sha="s1", conteudo="MAPA TECNICO grupo/api",
-                                 arquivos_lidos=(), criado_em="2025-01-01T00:00:00"))
-    uc, _, llm = caso(repo, llm=FakeLLM([]))
+    coord = FakeCoordenador()
+    uc, _, _, _ = caso(repo, coordenador=coord)
     revisao, _ = rodar(uc, repo)
-    sistema, _ = llm.chamadas[0]
-    assert "GUIA GERAL" in sistema
-    assert "GUIA DO MICRO grupo/api" in sistema
-    assert "GUIA DE OUTRO MICRO" not in sistema
-    assert "MAPA TECNICO grupo/api" in sistema
+    _, usuario = coord.chamadas[0]
+    assert "GUIA GERAL" in usuario
+    assert "GUIA DO MICRO grupo/api" in usuario
+    assert "GUIA DE OUTRO MICRO" not in usuario
     assert revisao.guia_versao == 1 and revisao.guia_micro_versao == 1
-    assert revisao.mapa_em == "2025-01-01T00:00:00"
 
 
-# ---------- R5: contexto completo (arquivo inteiro no head_sha do MR) ----------
-
-def test_arquivo_completo_entra_no_prompt_antes_do_diff(repo):
-    mr = dados_mr(arquivo("src/ContratoService.java", DIFF_SERVICE), head="headsha")
-    gitlab = FakeGitLab(mr=mr, conteudos_arquivo={
-        ("grupo/api", "src/ContratoService.java", "headsha"): "conteudo completo do arquivo",
+def test_coordenador_falho_cai_no_fallback_com_achados_originais(repo):
+    ag = FakePortaAgente(respostas={
+        "qualidade": ResultadoAgente(agente="qualidade", achados=(achado(severidade="P0", confianca=9),)),
     })
-    uc, _, llm = caso(repo, gitlab=gitlab, llm=FakeLLM([]))
-    rodar(uc, repo)
-    _, usuario = llm.chamadas[0]
-    assert "# Arquivo completo (versão do MR): src/ContratoService.java" in usuario
-    assert "conteudo completo do arquivo" in usuario
-    assert usuario.index("# Arquivo completo") < usuario.index("# Diff a revisar")
+    coord = FakeCoordenador(excecao=RuntimeError("Claude Code falhou"))
+    uc, _, _, _ = caso(repo, agente=ag, coordenador=coord)
+    revisao, aps = rodar(uc, repo)
+    assert revisao.status == StatusExecucao.CONCLUIDA
+    assert "Consolidação indisponível" in revisao.nota
+    assert len(aps) == 1
+    assert aps[0].severidade == Severidade.P0  # severidade do próprio achado, sem coordenador
+    assert aps[0].origens == "qualidade"
 
 
-def test_arquivo_maior_que_40000_caracteres_vai_so_com_diff(repo):
-    mr = dados_mr(arquivo("src/ContratoService.java", DIFF_SERVICE), head="headsha")
-    gitlab = FakeGitLab(mr=mr, conteudos_arquivo={
-        ("grupo/api", "src/ContratoService.java", "headsha"): "x" * 40_001,
+def test_json_invalido_do_coordenador_cai_no_fallback(repo):
+    coord = FakeCoordenador(resposta="isso não é json nenhum")
+    uc, _, _, _ = caso(repo, coordenador=coord)
+    revisao, aps = rodar(uc, repo)
+    assert revisao.status == StatusExecucao.CONCLUIDA
+    assert "Consolidação indisponível" in revisao.nota
+    assert len(aps) == 1  # fallback: o achado original vira apontamento
+
+
+def test_grupo_nao_mencionado_pelo_coordenador_vira_descarte(repo):
+    ag = FakePortaAgente(respostas={
+        "qualidade": ResultadoAgente(agente="qualidade", achados=(achado(),)),
     })
-    uc, _, llm = caso(repo, gitlab=gitlab, llm=FakeLLM([]))
-    rodar(uc, repo)
-    _, usuario = llm.chamadas[0]
-    assert "# Arquivo completo" not in usuario
+    coord = FakeCoordenador(resposta='{"apontamentos": [], "descartados": [], "resumo": "nada"}')
+    uc, _, _, _ = caso(repo, agente=ag, coordenador=coord)
+    revisao, aps = rodar(uc, repo)
+    assert aps == []
+    descartados = repo.listar_descartes(revisao.id)
+    assert len(descartados) == 1
+    assert descartados[0].motivo == "Não mencionado pelo coordenador."
 
 
-# ---------- R6: "por quê" — motivo e fontes verificadas ----------
-
-def test_fonte_de_comentario_confirmada_aparece_no_apontamento(repo):
-    repo.salvar_exemplo(Exemplo("back", "grupo/api", 1, 55, "X.java", 1, "t", "c", False))
-    uc, _, _ = caso(repo, llm=FakeLLM([
-        sugestao(motivo="por causa disso",
-                 fontes={"comentarios": [55], "padrao_guia": "", "regra_perfil": ""})
-    ]))
-    _, aps = rodar(uc, repo)
-    assert aps[0].motivo == "por causa disso"
-    assert aps[0].fontes.comentarios == (55,)
-    assert not aps[0].fontes.sem_precedente
-
-
-def test_fonte_de_comentario_inventada_fica_nao_confirmada(repo):
-    uc, _, _ = caso(repo, llm=FakeLLM([
-        sugestao(fontes={"comentarios": [999], "padrao_guia": "", "regra_perfil": ""})
-    ]))
-    _, aps = rodar(uc, repo)
-    assert aps[0].fontes.comentarios == ()
-    assert aps[0].fontes.comentarios_nao_confirmados == (999,)
-    assert aps[0].fontes.sem_precedente
+def test_limite_de_apontamentos_do_perfil_move_excedente_para_descartados(repo):
+    diff_grande = "@@ -1,1 +1,50 @@\n" + "\n".join(f"+linha {i}" for i in range(1, 51)) + "\n"
+    mr = dados_mr(arquivo("src/ContratoService.java", diff_grande))
+    # Linhas espaçadas de 4 em 4: nunca ficam a 3 linhas ou menos uma da outra, então a
+    # pré-consolidação nunca agrupa nenhuma com a outra (12 grupos distintos garantidos).
+    achados = tuple(achado(linha=1 + i * 4, confianca=i, comentario=f"problema {i}") for i in range(12))
+    ag = FakePortaAgente(respostas={"qualidade": ResultadoAgente(agente="qualidade", achados=achados)})
+    uc, _, _, _ = caso(repo, gitlab=FakeGitLab(mr=mr), agente=ag)
+    revisao, aps = rodar(uc, repo)
+    assert len(aps) == 10  # max_apontamentos do PERFIL_BACK (dos testes)
+    descartados = repo.listar_descartes(revisao.id)
+    assert len(descartados) == 2
+    assert all(d.motivo == "Excedeu o limite de apontamentos do perfil." for d in descartados)
 
 
-def test_padrao_do_guia_confirmado_so_se_texto_existir_no_guia(repo):
-    repo.salvar_guia("back", GERAL, "### Mass assignment\nFontes: #1", [], [])
-    uc, _, _ = caso(repo, llm=FakeLLM([
-        sugestao(fontes={"comentarios": [], "padrao_guia": "Mass assignment", "regra_perfil": ""})
-    ]))
-    _, aps = rodar(uc, repo)
-    assert aps[0].fontes.padrao_confirmado
+def test_nenhum_achado_dos_agentes_conclui_sem_chamar_coordenador(repo):
+    ag = FakePortaAgente(respostas={"qualidade": ResultadoAgente(agente="qualidade")})
+    coord = FakeCoordenador()
+    uc, _, _, _ = caso(repo, agente=ag, coordenador=coord)
+    revisao, aps = rodar(uc, repo)
+    assert aps == []
+    assert "Nenhum achado dos agentes" in revisao.nota
+    assert coord.chamadas == []
 
 
-def test_sem_nenhuma_fonte_citada_e_sem_precedente(repo):
-    uc, _, _ = caso(repo, llm=FakeLLM([sugestao()]))
-    _, aps = rodar(uc, repo)
-    assert aps[0].fontes.sem_precedente
-
-
-# ---------- progresso: etapa, contagem, histórico e cancelamento ----------
+# ---------- progresso, cancelamento e workspace (R1/R6, já existente, adaptado ao pipeline novo) ----------
 
 def test_revisao_nasce_pendente_antes_de_executar(repo):
-    uc, _, _ = caso(repo, llm=FakeLLM([sugestao()]))
+    uc, _, _, _ = caso(repo)
     revisao_id = uc.iniciar(URL, "back")
     assert repo.obter_revisao(revisao_id).status == StatusExecucao.PENDENTE
 
 
-def test_cada_etapa_gera_exatamente_um_evento_com_contagem(repo):
-    mr = dados_mr(arquivo("A.java", DIFF_SERVICE), arquivo("B.java", DIFF_SERVICE))
-    uc, _, _ = caso(repo, gitlab=FakeGitLab(mr=mr), llm=FakeLLM([sugestao()]))
+def test_etapas_principais_aparecem_no_historico(repo):
+    uc, _, _, _ = caso(repo)
     revisao, _ = rodar(uc, repo)
-
-    eventos = repo.listar_eventos(revisao.id)
-    etapas = [e.etapa for e in eventos]
-    assert etapas == [
-        "Carregando diff do MR...",
-        "Consultando o guia de padrões...",
-        "Revisando A.java (1 de 2)...",
-        "Revisando B.java (2 de 2)...",
-        "Gerando comentários...",
-    ]
-    assert all(e.criado_em for e in eventos)
-    assert revisao.etapa == "Gerando comentários..."
-    assert revisao.atualizado_em  # heartbeat final gravado
+    etapas = [e.etapa for e in repo.listar_eventos(revisao.id)]
+    assert "Carregando diff do MR..." in etapas
+    assert "Consultando o guia de padrões..." in etapas
+    assert any(e.startswith("Agentes especialistas trabalhando") for e in etapas)
+    assert "Coordenador consolidando..." in etapas
 
 
-def test_cancelamento_no_meio_interrompe_sem_gerar_apontamentos(repo):
-    mr = dados_mr(arquivo("A.java", DIFF_SERVICE), arquivo("B.java", DIFF_SERVICE))
-    gitlab = FakeGitLab(mr=mr)
-    uc, _, _ = caso(repo, gitlab=gitlab, max_caracteres_lote=50)  # força 2 lotes
+def test_cancelamento_antes_dos_agentes_nao_gera_apontamentos(repo):
+    class AgenteQueNuncaDeveriaRodar:
+        def executar(self, agente, workspace, modelo, usuario, ao_progresso):
+            raise AssertionError("não deveria ter chamado o agente")
+
+    uc, _, _, _ = caso(repo, agente=AgenteQueNuncaDeveriaRodar())
+    revisao_id = uc.iniciar(URL, "back")
+    revisao = repo.obter_revisao(revisao_id)
+    revisao.status = StatusExecucao.CANCELADA
+    repo.salvar_revisao(revisao)
+
+    uc.executar(revisao_id)
+    assert repo.obter_revisao(revisao_id).status == StatusExecucao.CANCELADA
+    assert repo.listar_apontamentos(revisao_id) == []
+
+
+def test_workspace_e_descartado_mesmo_quando_o_coordenador_falha(repo):
+    ws = FakeWorkspace()
+    coord = FakeCoordenador(excecao=RuntimeError("falhou"))
+    uc, _, _, _ = caso(repo, workspace=ws, coordenador=coord)
+    rodar(uc, repo)
+    assert len(ws.descartados) == 1
+
+
+def test_cancelar_enquanto_ainda_pendente_nao_tenta_processar(repo):
+    uc, _, _, _ = caso(repo)
+    revisao_id = uc.iniciar(URL, "back")
+    revisao = repo.obter_revisao(revisao_id)
+    revisao.status = StatusExecucao.CANCELADA  # usuário cancelou antes do background rodar
+    repo.salvar_revisao(revisao)
+    uc.executar(revisao_id)  # não deve levantar nem tentar reprocessar
+    assert repo.obter_revisao(revisao_id).status == StatusExecucao.CANCELADA
+
+
+def test_workspace_e_descartado_quando_cancelado_durante_os_agentes(repo):
+    ws = FakeWorkspace()
+    ag = FakePortaAgente()
+    uc, _, _, _ = caso(repo, workspace=ws, agente=ag)
     revisao_id = uc.iniciar(URL, "back")
 
-    class LLMQueCancela:
-        def __init__(self):
-            self.chamadas = 0
+    def executar_e_cancelar(agente, workspace, modelo, usuario, ao_progresso):
+        r = repo.obter_revisao(revisao_id)
+        r.status = StatusExecucao.CANCELADA
+        repo.salvar_revisao(r)
+        return ResultadoAgente(agente=agente.nome, achados=(achado(),))
 
-        def completar(self, sistema, usuario):
-            self.chamadas += 1
-            r = repo.obter_revisao(revisao_id)
-            r.status = StatusExecucao.CANCELADA
-            repo.salvar_revisao(r)
-            return json.dumps([sugestao()])
-
-    uc._llm = LLMQueCancela()
+    ag.executar = executar_e_cancelar
     uc.executar(revisao_id)
-
-    revisao = repo.obter_revisao(revisao_id)
-    assert revisao.status == StatusExecucao.CANCELADA
+    assert repo.obter_revisao(revisao_id).status == StatusExecucao.CANCELADA
     assert repo.listar_apontamentos(revisao_id) == []
-    assert uc._llm.chamadas == 1  # só o primeiro lote chegou a chamar o LLM
+    assert len(ws.descartados) == 1
 
 
-def test_falha_no_meio_preserva_a_ultima_etapa_tentada(repo):
-    uc, _, _ = caso(repo, llm=FakeLLM("não é json"))
-    revisao, _ = rodar(uc, repo)
+def test_escreve_patches_e_contexto_md_no_workspace(repo):
+    mr = dados_mr(arquivo("src/ContratoService.java", DIFF_SERVICE))
+    ws = FakeWorkspace()
+    uc, _, _, _ = caso(repo, gitlab=FakeGitLab(mr=mr), workspace=ws)
+    rodar(uc, repo)
+    assert len(ws.contextos_escritos) == 1
+    _, patches, contexto_md = ws.contextos_escritos[0]
+    assert "src/ContratoService.java" in patches
+    assert "Ajusta contrato" in contexto_md
+    assert "src/ContratoService.java" in contexto_md
+
+
+# ---------- R1: workspace do repositório ----------
+
+def test_workspace_indisponivel_nao_consegue_revisar(repo):
+    ws = FakeWorkspace(falhar_preparar=True)
+    ag = FakePortaAgente()
+    uc, _, _, _ = caso(repo, workspace=ws, agente=ag)
+    revisao, aps = rodar(uc, repo)
+    assert revisao.status == StatusExecucao.CONCLUIDA
+    assert "clone falhou" in revisao.workspace_aviso
+    assert "workspace do repositório não ficou pronto" in revisao.nota
+    assert aps == []
+    assert ag.chamadas == []  # sem workspace, agente nem chega a rodar
+
+
+def test_sha_divergente_vira_erro_sem_rodar_agentes(repo):
+    ws = FakeWorkspace(sha_divergente=True)
+    ag = FakePortaAgente()
+    uc, _, _, _ = caso(repo, workspace=ws, agente=ag)
+    revisao, aps = rodar(uc, repo)
     assert revisao.status == StatusExecucao.ERRO
-    assert revisao.etapa == "Gerando comentários..."
+    assert "sha divergente" in revisao.erro
+    assert ag.chamadas == []
+    assert aps == []
+
+
+# ---------- R2: filtro de ruído e classificação de risco (inalterado, continua valendo) ----------
+
+def test_mr_so_com_arquivo_vendorizado_nao_roda_agente_e_mostra_nada_a_revisar(repo):
+    mr = dados_mr(arquivo("vendor/Gerado.java", DIFF_SERVICE))
+    ag = FakePortaAgente()
+    uc, _, _, _ = caso(repo, gitlab=FakeGitLab(mr=mr), agente=ag)
+    revisao, aps = rodar(uc, repo)
+    assert ag.chamadas == []
+    assert revisao.nota == "Nada a revisar após o filtro."
+    assert revisao.arquivos_ignorados == "vendor/Gerado.java"
+    assert aps == []
+
+
+def test_nivel_de_risco_e_calculado_quando_nao_forcado(repo):
+    uc, _, _, _ = caso(repo)
+    revisao, _ = rodar(uc, repo)
+    assert revisao.nivel_risco == "TRIVIAL"  # DIFF_SERVICE é pequeno, um arquivo só
+
+
+def test_nivel_de_risco_forcado_prevalece_sobre_o_calculado(repo):
+    from revisor.dominio.risco import NivelRisco
+    uc, _, _, _ = caso(repo)
+    revisao_id = uc.iniciar(URL, "back", nivel_forcado=NivelRisco.COMPLETO)
+    uc.executar(revisao_id)
+    assert repo.obter_revisao(revisao_id).nivel_risco == "COMPLETO"
+
+
+def test_avaliar_risco_nao_grava_nada_no_banco(repo):
+    uc, _, _, _ = caso(repo)
+    avaliacao = uc.avaliar_risco(URL, "back")
+    assert avaliacao.titulo == "Ajusta contrato"
+    assert avaliacao.arquivos_mantidos == ["src/ContratoService.java"]
+    assert avaliacao.arquivos_ignorados == []
+    assert avaliacao.nivel.value == "TRIVIAL"
+    assert repo.listar_revisoes() == []
+
+
+def test_avaliar_risco_aplica_filtro_de_ruido(repo):
+    mr = dados_mr(arquivo("vendor/Gerado.java", DIFF_SERVICE), arquivo("src/A.java", DIFF_SERVICE))
+    uc, _, _, _ = caso(repo, gitlab=FakeGitLab(mr=mr))
+    avaliacao = uc.avaliar_risco(URL, "back")
+    assert avaliacao.arquivos_mantidos == ["src/A.java"]
+    assert avaliacao.arquivos_ignorados == ["vendor/Gerado.java"]
+
+
+def test_avaliar_risco_valida_entrada_como_iniciar(repo):
+    uc, _, _, _ = caso(repo)
+    with pytest.raises(ValueError):
+        uc.avaliar_risco(URL, "inexistente")

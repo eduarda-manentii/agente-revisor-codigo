@@ -55,6 +55,7 @@ class Apontamento:
     erro: str | None = None
     motivo: str = ""
     fontes: Fontes | None = None
+    origens: str = ""  # agentes que acharam isso (v3 R4), separados por vírgula; vazio no fluxo antigo
     id: int | None = None
 
     def __post_init__(self) -> None:

@@ -2,100 +2,19 @@
 from __future__ import annotations
 
 from revisor.dominio.apontamento import Apontamento
-from revisor.dominio.diff import ArquivoDiff
-from revisor.dominio.modelos import GERAL, Exemplo, Guia, MapaProjeto, Perfil
+from revisor.dominio.consolidacao import GrupoAchados
+from revisor.dominio.modelos import GERAL, Exemplo, Guia
+from revisor.dominio.sanitizacao import sanitizar
 
 _LIMITE_DESCRICAO_MR = 3000
 _LIMITE_TRECHO_EXEMPLO = 1200
 
-_FORMATO_SAIDA = """\
-Responda SOMENTE com um array JSON, sem texto antes ou depois. Cada item:
-{"arquivo": "<caminho exatamente como no cabeçalho '### arquivo:'>",
- "linha": <número da coluna da esquerda do diff>,
- "severidade": "P0" | "P1" | "P2",
- "confianca": <1 a 10>,
- "comentario": "<texto do comentário, pronto para postar no MR>",
- "motivo": "<por que é um problema: raciocínio técnico e consequência concreta>",
- "fontes": {"comentarios": [<note_ids citados entre colchetes [#id] nos exemplos, ou vazio>],
-            "padrao_guia": "<título EXATO de um padrão do guia que embasou o apontamento, ou vazio>",
-            "regra_perfil": "<trecho EXATO copiado das instruções do perfil, ou vazio>"}}
-
-Regras:
-- Só comente linhas que têm número à esquerda. Linhas removidas (sem número) não podem ser comentadas.
-- P0 = quebra funcionamento, corrompe dado ou é vulnerabilidade. P1 = requisito, padrão ou teste importante.
-  P2 = melhoria que não bloqueia.
-- Só aponte problemas reais e acionáveis. Nada de elogios, nada de preferência estética sem impacto.
-- Confiança abaixo de 5 significa que você não tem certeza: prefira não incluir.
-- Escreva o comentário no tom e no estilo descritos no guia do revisor.
-- Antes de afirmar que algo "não existe", confira no arquivo completo (quando disponível). Sem o
-  arquivo completo, não afirme nada sobre o que está fora do diff.
-- Use o mapa técnico do microserviço para entender os componentes internos antes de apontar mau uso
-  deles (ex.: não diga que falta liberar um recurso se um componente da equipe já faz isso sozinho).
-- Em "fontes", cite só o que de fato embasou o apontamento: ids de comentários reais (os [#id] nos
-  exemplos), o título exato de um padrão do guia, ou um trecho exato das instruções do perfil. Se um
-  padrão do guia embasou o apontamento, cite também os ids das "Fontes:" daquele padrão em
-  "comentarios". Nunca invente um id, título ou trecho. Se nada embasou, deixe as três fontes vazias.
-- Se não houver nada relevante, responda [].
-"""
-
-
-def sistema_revisao(
-    perfil: Perfil, guia_geral: Guia | None, guia_micro: Guia | None = None, mapa: MapaProjeto | None = None
-) -> str:
-    partes = [
-        "Você é um revisor de código experiente fazendo code review de um merge request.",
-        "## Instruções do perfil",
-        perfil.instrucoes.strip(),
-    ]
-    if guia_geral:
-        partes += [
-            "## Guia geral do revisor (padrões aprendidos com reviews reais de toda a equipe — priorize-os)",
-            guia_geral.conteudo.strip(),
-        ]
-    if guia_micro:
-        partes += [
-            "## Guia deste microserviço (específico do projeto — prevalece sobre o guia geral em "
-            "caso de conflito)",
-            guia_micro.conteudo.strip(),
-        ]
-    if mapa:
-        partes += [
-            "## Mapa técnico deste microserviço (use para entender componentes internos antes de "
-            "apontar mau uso deles)",
-            mapa.conteudo.strip(),
-        ]
-    partes += ["## Formato de saída", _FORMATO_SAIDA]
-    return "\n\n".join(partes)
-
 
 def _formatar_exemplo(ex: Exemplo) -> str:
     cabecalho = f"[#{ex.note_id}] autor: {ex.autor or '?'} | projeto: {ex.projeto} | arquivo: {ex.arquivo}"
-    trecho = ex.trecho[:_LIMITE_TRECHO_EXEMPLO]
+    trecho = sanitizar(ex.trecho[:_LIMITE_TRECHO_EXEMPLO])
     acolhido = " (acolhido pelo autor)" if ex.resolvido else ""
-    return f"{cabecalho}{acolhido}\n```\n{trecho}\n```\nComentário do revisor: {ex.comentario}"
-
-
-def usuario_revisao(
-    titulo: str,
-    descricao: str,
-    arquivos: list[ArquivoDiff],
-    exemplos: list[Exemplo],
-    conteudos_completos: dict[str, str] | None = None,
-) -> str:
-    conteudos_completos = conteudos_completos or {}
-    partes = [f"# MR: {titulo}", (descricao or "(sem descrição)")[:_LIMITE_DESCRICAO_MR]]
-    if exemplos:
-        partes.append(
-            "# Comentários reais da equipe em códigos parecidos (use como referência de estilo e foco)"
-        )
-        partes += [_formatar_exemplo(ex) for ex in exemplos]
-    for arq in arquivos:
-        conteudo = conteudos_completos.get(arq.caminho_novo)
-        if conteudo:
-            partes.append(f"# Arquivo completo (versão do MR): {arq.caminho_novo}\n```\n{conteudo}\n```")
-    partes.append("# Diff a revisar")
-    partes += [arq.anotado() for arq in arquivos]
-    return "\n\n".join(partes)
+    return f"{cabecalho}{acolhido}\n```\n{trecho}\n```\nComentário do revisor: {sanitizar(ex.comentario)}"
 
 
 def sistema_destilacao(escopo: str) -> str:
@@ -183,6 +102,100 @@ def sistema_mapa() -> str:
         "7. Pontos de atenção.\n\n"
         "Responda em Markdown, só com o mapa, sem comentários antes ou depois."
     )
+
+
+def contexto_mr_md(titulo: str, descricao: str, arquivos: list[str], nivel_risco: str) -> str:
+    """Resumo gravado em .revisor/contexto-mr.md (R1) — ainda não lido por ninguém nesta fase, mas
+    é a base que os agentes especialistas (R3) vão usar em vez de repetir o contexto em cada prompt."""
+    partes = [
+        f"# {sanitizar(titulo)}", sanitizar(descricao or "(sem descrição)"),
+        f"Nível de risco: {nivel_risco}",
+        "## Arquivos alterados",
+    ]
+    partes += [f"- {caminho}" for caminho in arquivos] or ["(nenhum)"]
+    return "\n\n".join(partes)
+
+
+def usuario_agente(arquivos: list[str]) -> str:
+    """Prompt genérico de um agente especialista (R3): aponta pros arquivos já escritos no
+    workspace (.revisor/) em vez de colar o conteúdo — cada agente lê sozinho via Read/Grep/Glob."""
+    partes = [
+        "Revise o merge request. O contexto completo (título, descrição, nível de risco) está em "
+        "`.revisor/contexto-mr.md`. Leia esse arquivo primeiro.",
+        "Diffs já filtrados de cada arquivo alterado (um por arquivo, com o número da linha nova à "
+        "esquerda):",
+    ]
+    partes += [f"- .revisor/diff/{caminho}.patch" for caminho in arquivos]
+    partes.append(
+        "Leia cada patch e o código ao redor no workspace (mesmo diretório) antes de apontar "
+        "qualquer problema. Responda só com o array JSON de achados, no formato combinado."
+    )
+    return "\n\n".join(partes)
+
+
+def contexto_estilo_revisor(
+    guia_geral: Guia | None, exemplos: list[Exemplo], guia_micro: Guia | None = None,
+) -> str:
+    """Contexto extra só do agente estilo-revisor (R3.4): guias ativos + exemplos mais parecidos."""
+    partes = ["# Guia geral de estilo da equipe",
+             guia_geral.conteudo.strip() if guia_geral else "(sem guia geral treinado ainda)"]
+    if guia_micro:
+        partes += ["# Guia deste microserviço (prevalece sobre o geral em caso de conflito)",
+                  guia_micro.conteudo.strip()]
+    if exemplos:
+        partes.append("# Comentários reais da equipe em códigos parecidos")
+        partes += [_formatar_exemplo(ex) for ex in exemplos]
+    return "\n\n".join(partes)
+
+
+def sistema_coordenador(perfil: str) -> str:
+    """Papel de juiz (R4.2): consolida os achados pré-agrupados dos agentes num conjunto final de
+    apontamentos, no tom do guia da equipe."""
+    return (
+        f"Você é o coordenador do review de um MR revisado como {perfil}. Você recebe grupos de "
+        "achados já pré-agrupados (cada um pode ter vindo de um ou mais agentes especialistas) e "
+        "decide o resultado final. Para cada grupo, você deve:\n"
+        "- Deduplicar: se dois achados do mesmo grupo descrevem o mesmo problema com palavras "
+        "diferentes, trate como um só.\n"
+        "- Recategorizar quando fizer sentido (ex.: um problema de performance apontado pelo agente "
+        "de qualidade continua sendo um problema de performance).\n"
+        "- Descartar especulação, preferência estética sem impacto, falso positivo, e qualquer "
+        "achado que contradiga o guia da equipe — abra o arquivo no workspace pra conferir sempre "
+        "que não tiver certeza antes de descartar ou manter.\n"
+        "- Definir a severidade final (P0 quebra funcionamento/corrompe dado/é vulnerabilidade; P1 "
+        "é requisito, padrão ou teste importante; P2 é melhoria que não bloqueia).\n"
+        "- Reescrever o comentário no tom e estilo do guia da equipe, pronto para postar no MR.\n\n"
+        "Você tem acesso de leitura ao workspace (mesmo diretório dos agentes) para conferir o "
+        "código quando precisar. Responda SOMENTE com um objeto JSON, sem texto antes ou depois:\n"
+        '{"apontamentos": [{"grupo": <número do grupo>, "severidade": "P0"|"P1"|"P2", '
+        '"comentario": "<reescrito no tom do guia>"}],\n'
+        ' "descartados": [{"grupo": <número do grupo>, "motivo": "<por que foi descartado>"}],\n'
+        ' "resumo": "<até 5 linhas resumindo o review>"}\n\n'
+        "Todo grupo numerado que você receber precisa aparecer em EXATAMENTE uma das duas listas "
+        "(apontamentos ou descartados). Nunca invente severidade sem embasamento nos achados "
+        "recebidos ou no código que você mesmo conferir."
+    )
+
+
+def usuario_coordenador(
+    grupos: list[GrupoAchados], guia_geral: Guia | None = None, guia_micro: Guia | None = None,
+) -> str:
+    partes: list[str] = []
+    if guia_geral:
+        partes += ["# Guia geral da equipe", guia_geral.conteudo.strip()]
+    if guia_micro:
+        partes += ["# Guia deste microserviço (prevalece sobre o geral em caso de conflito)",
+                  guia_micro.conteudo.strip()]
+    partes.append("# Achados pré-agrupados")
+    for i, grupo in enumerate(grupos, start=1):
+        bloco = [f"## Grupo {i} — {grupo.arquivo}:{grupo.linha} — agentes: {', '.join(grupo.origens)}"]
+        for achado in grupo.achados:
+            bloco.append(
+                f"- [{achado.categoria} | {achado.severidade} | confiança {achado.confianca}] "
+                f"{sanitizar(achado.comentario)}\n  Evidência: {sanitizar(achado.evidencia)}"
+            )
+        partes.append("\n".join(bloco))
+    return "\n\n".join(partes)
 
 
 def usuario_mapa(projeto: str, arquivos: list[tuple[str, str]], pastas: list[str]) -> str:

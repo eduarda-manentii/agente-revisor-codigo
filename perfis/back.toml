@@ -3,4 +3,11 @@ descricao = "Java / Spring"
 extensoes = [".java", ".xml", ".sql", ".yml", ".yaml", ".properties"]
 instrucoes_arquivo = "instrucoes_back.md"
 max_apontamentos = 25
-confianca_minima = 5
+
+[agentes]
+TRIVIAL = ["generalista"]
+LEVE = ["qualidade", "estilo-revisor", "testes"]
+COMPLETO = ["qualidade", "estilo-revisor", "testes", "seguranca", "performance"]
+
+[agentes.modelo]
+seguranca = "opus"

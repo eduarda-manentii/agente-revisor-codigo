@@ -2,13 +2,12 @@ from datetime import datetime, timezone
 
 import pytest
 
-from revisor.aplicacao.revisar import RevisarMR
 from revisor.aplicacao.treinar import TreinarPerfil
 from revisor.aplicacao.triagem_publicacao import TriarApontamento
-from revisor.dominio.apontamento import MotivoRejeicao
-from revisor.dominio.modelos import ComentarioHistorico, StatusExecucao
+from revisor.dominio.apontamento import Apontamento, MotivoRejeicao, Severidade
+from revisor.dominio.modelos import ComentarioHistorico, Revisao, StatusExecucao
 from revisor.portas import ArvoreProjeto
-from tests.fakes import PERFIS, FakeGitLab, FakeLLM, sugestao
+from tests.fakes import PERFIS, FakeGitLab, FakeLLM
 
 
 def comentario(note_id, arquivo="src/A.java", texto=None, projeto="g/api", autor="fulana",
@@ -183,11 +182,11 @@ def test_reler_historico_ignora_checkpoint_sem_duplicar(repo):
 
 
 def test_rejeicoes_entram_uma_vez_mesmo_sem_comentarios_novos(repo):
-    uc = RevisarMR(FakeGitLab(), FakeLLM([sugestao(comentario="Apontamento chato")]), repo, PERFIS,
-                   "gitlab.empresa.com")
-    revisao_id = uc.iniciar("https://gitlab.empresa.com/g/p/-/merge_requests/1", "back")
-    uc.executar(revisao_id)
-    TriarApontamento(repo).rejeitar(repo.listar_apontamentos(revisao_id)[0].id, MotivoRejeicao.IRRELEVANTE)
+    revisao_id = repo.criar_revisao(Revisao("u", "g/p", 1, "back", status=StatusExecucao.CONCLUIDA))
+    ap = Apontamento(revisao_id, "A.java", "A.java", 1, None, Severidade.P2, 5,
+                     "Apontamento chato", "trecho")
+    repo.adicionar_apontamentos([ap])
+    TriarApontamento(repo).rejeitar(ap.id, MotivoRejeicao.IRRELEVANTE)
 
     llm = FakeLLM("# Guia com o que evitar")
     treinar(repo, FakeGitLab(), llm)

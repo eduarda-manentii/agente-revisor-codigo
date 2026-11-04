@@ -2,14 +2,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterator, Protocol
+from pathlib import Path
+from typing import Callable, Iterator, Protocol
 
+from revisor.dominio.agentes import ResultadoAgente
 from revisor.dominio.apontamento import Apontamento
+from revisor.dominio.coordenador import Descarte
 from revisor.dominio.modelos import (
     GERAL,
+    Agente,
     ComentarioHistorico,
     DadosMR,
     EventoRevisao,
+    ExecucaoAgente,
     Exemplo,
     Guia,
     MapaProjeto,
@@ -69,6 +74,64 @@ class PortaGitLab(Protocol):
 
 class PortaLLM(Protocol):
     def completar(self, sistema: str, usuario: str) -> str: ...
+
+
+@dataclass(frozen=True)
+class EventoAgente:
+    """Um passo de progresso de um agente (R6), derivado do stream de eventos do Claude Code."""
+    tipo: str  # "tool_use" | "resultado"
+    descricao: str  # "Lendo src/X.java", "Buscando 'validarToken'", ...
+
+
+class PortaAgente(Protocol):
+    def executar(
+        self, agente: Agente, workspace: Workspace, modelo: str,
+        usuario: str, ao_progresso: Callable[[EventoAgente], None],
+    ) -> ResultadoAgente:
+        """Roda um agente especialista (processo isolado, só leitura no workspace, R3)."""
+        ...
+
+
+class PortaCoordenador(Protocol):
+    def executar(
+        self, workspace: Workspace, modelo: str, sistema: str, usuario: str,
+        ao_progresso: Callable[[EventoAgente], None],
+    ) -> str:
+        """Roda o coordenador (processo isolado, só leitura no workspace, R4) e devolve o texto
+        bruto da resposta — o parse fica em dominio/coordenador.py, puro e testável."""
+        ...
+
+
+@dataclass(frozen=True)
+class Workspace:
+    caminho: Path
+    repo_cache: Path
+
+
+class WorkspaceIndisponivel(Exception):
+    """Clone/fetch falhou (rede, permissão, git ausente): o review continua em modo só diff (R1.5)."""
+
+
+class ShaDivergente(Exception):
+    """O commit buscado pela ref de MR não bate com o head_sha do GitLab: aborta o review (R1)."""
+
+
+class PortaWorkspace(Protocol):
+    def preparar(self, projeto: str, mr_iid: int, head_sha: str) -> Workspace:
+        """Checkout local do MR no head_sha exato (worktree sobre um clone --bare em cache)."""
+        ...
+
+    def ler_arquivo(self, workspace: Workspace, caminho: str) -> str | None:
+        """Conteúdo do arquivo no workspace, ou None se não existir."""
+        ...
+
+    def escrever_contexto(self, workspace: Workspace, patches: dict[str, str], contexto_md: str) -> None:
+        """Grava .revisor/diff/<caminho>.patch e .revisor/contexto-mr.md (base para os agentes, R3)."""
+        ...
+
+    def descartar(self, workspace: Workspace) -> None:
+        """Remove o worktree. Deve ser chamado sempre, mesmo em erro ou cancelamento."""
+        ...
 
 
 class Repositorio(Protocol):
@@ -135,3 +198,15 @@ class Repositorio(Protocol):
     def listar_mapas(self) -> list[MapaProjeto]:
         """O mapa mais recente de cada projeto."""
         ...
+
+    # execução dos agentes especialistas (R6)
+    def salvar_execucao_agente(self, execucao: ExecucaoAgente) -> int:
+        """Upsert por (revisao_id, agente): cria na primeira chamada, atualiza nas seguintes."""
+        ...
+    def listar_execucoes_agentes(self, revisao_id: int) -> list[ExecucaoAgente]: ...
+
+    # descartes do coordenador (R4)
+    def salvar_descartes(self, revisao_id: int, descartes: list[Descarte]) -> None: ...
+    def listar_descartes(self, revisao_id: int, incluir_recuperados: bool = False) -> list[Descarte]: ...
+    def obter_descarte(self, descarte_id: int) -> Descarte: ...
+    def marcar_descarte_recuperado(self, descarte_id: int) -> None: ...

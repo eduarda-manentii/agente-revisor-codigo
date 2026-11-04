@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import asdict, fields
@@ -10,10 +11,12 @@ from pathlib import Path
 from typing import Iterator
 
 from revisor.dominio.apontamento import Apontamento, MotivoRejeicao, Severidade, Status
+from revisor.dominio.coordenador import Descarte
 from revisor.dominio.fontes import Fontes
 from revisor.dominio.modelos import (
     GERAL,
     EventoRevisao,
+    ExecucaoAgente,
     Exemplo,
     Guia,
     MapaProjeto,
@@ -28,7 +31,11 @@ CREATE TABLE IF NOT EXISTS revisoes (
     perfil TEXT NOT NULL, status TEXT NOT NULL, titulo_mr TEXT, base_sha TEXT, start_sha TEXT,
     head_sha TEXT, guia_versao INTEGER, guia_micro_versao INTEGER, mapa_em TEXT,
     descartados INTEGER DEFAULT 0, nota TEXT, erro TEXT, etapa TEXT, etapa_iniciada_em TEXT,
-    atualizado_em TEXT, criada_em TEXT NOT NULL
+    atualizado_em TEXT, nivel_risco TEXT, arquivos_ignorados TEXT, workspace_aviso TEXT,
+    criada_em TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS schema_versao (
+    versao INTEGER PRIMARY KEY, aplicada_em TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS eventos_revisao (
     id INTEGER PRIMARY KEY, revisao_id INTEGER NOT NULL REFERENCES revisoes(id),
@@ -41,7 +48,7 @@ CREATE TABLE IF NOT EXISTS apontamentos (
     linha_antiga INTEGER, severidade TEXT NOT NULL, confianca INTEGER NOT NULL,
     texto_original TEXT NOT NULL, trecho TEXT, texto_final TEXT NOT NULL, status TEXT NOT NULL,
     motivo_rejeicao TEXT, discussion_id TEXT, erro TEXT, motivo TEXT, fontes TEXT,
-    incorporado_versao INTEGER
+    origens TEXT, incorporado_versao INTEGER
 );
 CREATE INDEX IF NOT EXISTS ix_apontamentos_revisao ON apontamentos(revisao_id);
 CREATE TABLE IF NOT EXISTS treinos (
@@ -70,6 +77,21 @@ CREATE TABLE IF NOT EXISTS mapas (
     arquivos_lidos TEXT NOT NULL, criado_em TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_mapas_projeto ON mapas(projeto);
+CREATE TABLE IF NOT EXISTS agentes_execucao (
+    id INTEGER PRIMARY KEY, revisao_id INTEGER NOT NULL REFERENCES revisoes(id),
+    agente TEXT NOT NULL, estado TEXT NOT NULL, etapa TEXT, modelo TEXT,
+    tokens_entrada INTEGER DEFAULT 0, tokens_saida INTEGER DEFAULT 0,
+    iniciado_em TEXT, atualizado_em TEXT,
+    UNIQUE (revisao_id, agente)
+);
+CREATE INDEX IF NOT EXISTS ix_agentes_execucao_revisao ON agentes_execucao(revisao_id);
+CREATE TABLE IF NOT EXISTS descartes_coordenacao (
+    id INTEGER PRIMARY KEY, revisao_id INTEGER NOT NULL REFERENCES revisoes(id),
+    arquivo TEXT NOT NULL, linha INTEGER NOT NULL, severidade TEXT NOT NULL,
+    confianca INTEGER NOT NULL, comentario TEXT NOT NULL, evidencia TEXT, motivo TEXT NOT NULL,
+    origens TEXT, recuperado INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_descartes_coordenacao_revisao ON descartes_coordenacao(revisao_id);
 """
 
 # Colunas acrescentadas depois da primeira versão: bancos antigos recebem ALTER TABLE.
@@ -90,9 +112,38 @@ _MIGRACOES = [
     ("revisoes", "atualizado_em", "TEXT"),
 ]
 
+# A partir daqui, migrações novas entram aqui: cada uma roda uma única vez (controlada pela tabela
+# schema_versao), em vez do padrão ad-hoc de _MIGRACOES acima.
+_MIGRACOES_VERSIONADAS: list[tuple[int, str]] = [
+    (1, "ALTER TABLE revisoes ADD COLUMN nivel_risco TEXT"),
+    (2, "ALTER TABLE revisoes ADD COLUMN arquivos_ignorados TEXT"),
+    (3, "ALTER TABLE revisoes ADD COLUMN workspace_aviso TEXT"),
+    (4, """
+        CREATE TABLE IF NOT EXISTS agentes_execucao (
+            id INTEGER PRIMARY KEY, revisao_id INTEGER NOT NULL REFERENCES revisoes(id),
+            agente TEXT NOT NULL, estado TEXT NOT NULL, etapa TEXT, modelo TEXT,
+            tokens_entrada INTEGER DEFAULT 0, tokens_saida INTEGER DEFAULT 0,
+            iniciado_em TEXT, atualizado_em TEXT,
+            UNIQUE (revisao_id, agente)
+        )
+    """),
+    (5, "CREATE INDEX IF NOT EXISTS ix_agentes_execucao_revisao ON agentes_execucao(revisao_id)"),
+    (6, "ALTER TABLE apontamentos ADD COLUMN origens TEXT"),
+    (7, """
+        CREATE TABLE IF NOT EXISTS descartes_coordenacao (
+            id INTEGER PRIMARY KEY, revisao_id INTEGER NOT NULL REFERENCES revisoes(id),
+            arquivo TEXT NOT NULL, linha INTEGER NOT NULL, severidade TEXT NOT NULL,
+            confianca INTEGER NOT NULL, comentario TEXT NOT NULL, evidencia TEXT, motivo TEXT NOT NULL,
+            origens TEXT, recuperado INTEGER NOT NULL DEFAULT 0
+        )
+    """),
+    (8, "CREATE INDEX IF NOT EXISTS ix_descartes_coordenacao_revisao ON descartes_coordenacao(revisao_id)"),
+]
+
 _CAMPOS_APONTAMENTO = [f.name for f in fields(Apontamento) if f.name != "id"]
 _CAMPOS_REVISAO = [f.name for f in fields(Revisao) if f.name != "id"]
 _CAMPOS_TREINO = [f.name for f in fields(Treino) if f.name != "id"]
+_CAMPOS_EXECUCAO_AGENTE = [f.name for f in fields(ExecucaoAgente) if f.name != "id"]
 
 
 def _agora() -> str:
@@ -123,12 +174,73 @@ class RepositorioSQLite:
         self._caminho = caminho
         caminho.parent.mkdir(parents=True, exist_ok=True)
         with self._conexao() as con:
+            nova_instalacao = not self._tabela_existe(con, "revisoes")
+            fazer_backup = not nova_instalacao and (
+                self._migracao_legada_pendente(con) or self._migracao_versionada_pendente(con)
+            )
+        if fazer_backup:
+            self._fazer_backup()
+        with self._conexao() as con:
             self._migrar_guias_para_escopo(con)
             con.executescript(_ESQUEMA)
             for tabela, coluna, tipo in _MIGRACOES:
                 existentes = {r["name"] for r in con.execute(f"PRAGMA table_info({tabela})")}
                 if coluna not in existentes:
                     con.execute(f"ALTER TABLE {tabela} ADD COLUMN {coluna} {tipo}")
+            self._aplicar_migracoes_versionadas(con)
+
+    def _fazer_backup(self) -> None:
+        """Copia o banco inteiro antes de migrar, pra nunca depender só da migração ter dado certo."""
+        if not self._caminho.exists() or self._caminho.stat().st_size == 0:
+            return
+        pasta_backup = self._caminho.parent / "backup"
+        pasta_backup.mkdir(parents=True, exist_ok=True)
+        marca = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        destino = pasta_backup / f"{self._caminho.stem}-{marca}{self._caminho.suffix}"
+        shutil.copy2(self._caminho, destino)
+
+    @staticmethod
+    def _tabela_existe(con: sqlite3.Connection, nome: str) -> bool:
+        return con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (nome,)
+        ).fetchone() is not None
+
+    @staticmethod
+    def _migracao_legada_pendente(con: sqlite3.Connection) -> bool:
+        for tabela, coluna, _ in _MIGRACOES:
+            if not RepositorioSQLite._tabela_existe(con, tabela):
+                continue
+            existentes = {r["name"] for r in con.execute(f"PRAGMA table_info({tabela})")}
+            if coluna not in existentes:
+                return True
+        return False
+
+    @staticmethod
+    def _migracao_versionada_pendente(con: sqlite3.Connection) -> bool:
+        if not RepositorioSQLite._tabela_existe(con, "schema_versao"):
+            return True
+        aplicadas = {r[0] for r in con.execute("SELECT versao FROM schema_versao")}
+        return any(versao not in aplicadas for versao, _ in _MIGRACOES_VERSIONADAS)
+
+    @staticmethod
+    def _aplicar_migracoes_versionadas(con: sqlite3.Connection) -> None:
+        """Cada migração roda uma única vez, registrada em schema_versao. O SQL (ALTER TABLE ADD
+        COLUMN ou CREATE TABLE/INDEX IF NOT EXISTS) já pode ter efeito mesmo sem ter sido marcado
+        como aplicado ainda — ex.: tabela/coluna nasceu agora pelo _ESQUEMA atual, mas outra tabela
+        da mesma instalação é antiga. Por isso tenta rodar e ignora "coluna duplicada": é só o sinal
+        de que já estava lá."""
+        aplicadas = {r[0] for r in con.execute("SELECT versao FROM schema_versao")}
+        for versao, sql in _MIGRACOES_VERSIONADAS:
+            if versao in aplicadas:
+                continue
+            try:
+                con.execute(sql)
+            except sqlite3.OperationalError as erro:
+                if "duplicate column name" not in str(erro):
+                    raise
+            con.execute(
+                "INSERT INTO schema_versao (versao, aplicada_em) VALUES (?, ?)", (versao, _agora())
+            )
 
     @staticmethod
     def _migrar_guias_para_escopo(con: sqlite3.Connection) -> None:
@@ -230,6 +342,7 @@ class RepositorioSQLite:
             dados["motivo_rejeicao"] = MotivoRejeicao(dados["motivo_rejeicao"])
         dados["trecho"] = dados["trecho"] or ""
         dados["motivo"] = dados["motivo"] or ""
+        dados["origens"] = dados["origens"] or ""
         dados["fontes"] = _fontes_de_json(dados["fontes"])
         return Apontamento(**dados)
 
@@ -536,3 +649,84 @@ class RepositorioSQLite:
                 "ORDER BY m.projeto"
             ).fetchall()
         return [self._para_mapa(r) for r in linhas]
+
+    # ---------- execução dos agentes especialistas (R6) ----------
+    def salvar_execucao_agente(self, execucao: ExecucaoAgente) -> int:
+        """Upsert por (revisao_id, agente): grava exatamente os campos recebidos. Quem chama
+        preserva `iniciado_em` entre as chamadas de atualização do mesmo agente."""
+        execucao.atualizado_em = execucao.atualizado_em or _agora()
+        execucao.iniciado_em = execucao.iniciado_em or execucao.atualizado_em
+        valores = asdict(execucao)
+        with self._conexao() as con:
+            con.execute(
+                f"INSERT INTO agentes_execucao ({', '.join(_CAMPOS_EXECUCAO_AGENTE)}) "
+                f"VALUES ({', '.join('?' for _ in _CAMPOS_EXECUCAO_AGENTE)}) "
+                "ON CONFLICT (revisao_id, agente) DO UPDATE SET "
+                + ", ".join(f"{c} = excluded.{c}" for c in _CAMPOS_EXECUCAO_AGENTE),
+                tuple(valores[c] for c in _CAMPOS_EXECUCAO_AGENTE),
+            )
+            linha = con.execute(
+                "SELECT id FROM agentes_execucao WHERE revisao_id = ? AND agente = ?",
+                (execucao.revisao_id, execucao.agente),
+            ).fetchone()
+        execucao.id = linha["id"]
+        return execucao.id
+
+    @staticmethod
+    def _para_execucao_agente(r: sqlite3.Row) -> ExecucaoAgente:
+        dados = dict(r)
+        for campo in ("etapa", "modelo", "iniciado_em", "atualizado_em"):
+            dados[campo] = dados[campo] or ""
+        return ExecucaoAgente(**dados)
+
+    def listar_execucoes_agentes(self, revisao_id: int) -> list[ExecucaoAgente]:
+        with self._conexao() as con:
+            linhas = con.execute(
+                "SELECT * FROM agentes_execucao WHERE revisao_id = ? ORDER BY id", (revisao_id,)
+            ).fetchall()
+        return [self._para_execucao_agente(r) for r in linhas]
+
+    # ---------- descartes do coordenador (R4) ----------
+    def salvar_descartes(self, revisao_id: int, descartes: list[Descarte]) -> None:
+        if not descartes:
+            return
+        with self._conexao() as con:
+            con.executemany(
+                "INSERT INTO descartes_coordenacao (revisao_id, arquivo, linha, severidade, "
+                "confianca, comentario, evidencia, motivo, origens, recuperado) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (revisao_id, d.arquivo, d.linha, d.severidade.value, d.confianca, d.comentario,
+                     d.evidencia, d.motivo, ",".join(d.origens), int(d.recuperado))
+                    for d in descartes
+                ],
+            )
+
+    @staticmethod
+    def _para_descarte(r: sqlite3.Row) -> Descarte:
+        return Descarte(
+            arquivo=r["arquivo"], linha=r["linha"], severidade=Severidade(r["severidade"]),
+            confianca=r["confianca"], comentario=r["comentario"], evidencia=r["evidencia"] or "",
+            motivo=r["motivo"], origens=tuple(r["origens"].split(",")) if r["origens"] else (),
+            recuperado=bool(r["recuperado"]), id=r["id"],
+        )
+
+    def listar_descartes(self, revisao_id: int, incluir_recuperados: bool = False) -> list[Descarte]:
+        sql = "SELECT * FROM descartes_coordenacao WHERE revisao_id = ?"
+        if not incluir_recuperados:
+            sql += " AND recuperado = 0"
+        sql += " ORDER BY id"
+        with self._conexao() as con:
+            linhas = con.execute(sql, (revisao_id,)).fetchall()
+        return [self._para_descarte(r) for r in linhas]
+
+    def obter_descarte(self, descarte_id: int) -> Descarte:
+        return self._para_descarte(
+            self._um("SELECT * FROM descartes_coordenacao WHERE id = ?", (descarte_id,))
+        )
+
+    def marcar_descarte_recuperado(self, descarte_id: int) -> None:
+        with self._conexao() as con:
+            con.execute(
+                "UPDATE descartes_coordenacao SET recuperado = 1 WHERE id = ?", (descarte_id,)
+            )

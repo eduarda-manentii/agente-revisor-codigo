@@ -10,8 +10,14 @@
     · guia geral {% if revisao.guia_versao %}v{{ revisao.guia_versao }}{% else %}sem guia treinado{% endif %}
     · guia do micro {% if revisao.guia_micro_versao %}v{{ revisao.guia_micro_versao }}{% else %}sem guia próprio do micro{% endif %}
     · código lido em {% if revisao.mapa_em %}{{ revisao.mapa_em[:10] }}{% else %}ainda não lido{% endif %}
+    {% if revisao.nivel_risco %}· risco <strong>{{ revisao.nivel_risco|lower|capitalize }}</strong>{% endif %}
     · <a href="{{ revisao.mr_url }}" target="_blank" rel="noopener">abrir no GitLab</a>
   </p>
+  {% if revisao.workspace_aviso %}
+  <p class="aviso">
+    Não deu pra clonar o repositório ({{ revisao.workspace_aviso }}); review rodou só com o diff do GitLab.
+  </p>
+  {% endif %}
   <p class="meta cronometro">
     <span id="etapa">{{ revisao.etapa or "Na fila..." }}</span>
     · decorrido <span id="cronometro-total" data-inicio="{{ revisao.criada_em }}">{{ duracao_total }}</span>
@@ -30,6 +36,12 @@
       </form>
     </div>
   </div>
+  {% if revisao.arquivos_ignorados %}
+  <details class="avisos">
+    <summary>Arquivos ignorados pelo filtro de ruído ({{ revisao.arquivos_ignorados.splitlines()|length }})</summary>
+    <ul>{% for caminho in revisao.arquivos_ignorados.splitlines() %}<li>{{ caminho }}</li>{% endfor %}</ul>
+  </details>
+  {% endif %}
   {% if eventos %}
   <details class="avisos">
     <summary>Histórico ({{ eventos|length }} etapa(s))</summary>
@@ -61,6 +73,7 @@
   <div class="prontidao prontidao-{{ 'alta' if prontidao >= 80 else ('media' if prontidao >= 50 else 'baixa') }}">
     <p><strong>Prontidão: {{ prontidao }}/100</strong>
       <span class="ajuda">(100 = nada em aberto; cada P0/P1/P2 pendente pesa conforme a severidade)</span>
+      {% if recomendacao %}· <strong>{{ rotulos_recomendacao[recomendacao] }}</strong>{% endif %}
     </p>
     {% if comparacao %}
     <p class="ajuda">
@@ -69,6 +82,21 @@
     </p>
     {% endif %}
   </div>
+  {% endif %}
+  {% if descartados_coordenador %}
+  <details class="avisos">
+    <summary>Descartados pelo coordenador ({{ descartados_coordenador|length }})</summary>
+    {% for d in descartados_coordenador %}
+    <div class="apontamento sev-{{ d.severidade|lower }}">
+      <p><strong>{{ d.severidade }}</strong> {{ d.arquivo }}:{{ d.linha }} — {{ d.motivo }}</p>
+      <blockquote class="texto-final">{{ d.comentario }}</blockquote>
+      {% if d.origens %}<p class="ajuda">Encontrado por: {{ d.origens|join(', ') }}</p>{% endif %}
+      <form method="post" action="/revisoes/{{ revisao.id }}/descartes/{{ d.id }}/recuperar">
+        <button class="botao botao-discreto">Recuperar</button>
+      </form>
+    </div>
+    {% endfor %}
+  </details>
   {% endif %}
   {% if total %}
   <div class="barra-publicar">
@@ -96,7 +124,12 @@
       </header>
       {% if ap.trecho %}<pre class="trecho"><code>{{ ap.trecho }}</code></pre>{% endif %}
 
-      {% if ap.fontes %}
+      {% if ap.origens %}
+      <details class="por-que" open>
+        <summary>Por quê</summary>
+        <p><strong>Encontrado por:</strong> {{ ap.origens }}</p>
+      </details>
+      {% elif ap.fontes %}
       <details class="por-que" open>
         <summary>Por quê</summary>
         {% if not ap.fontes.registrada %}

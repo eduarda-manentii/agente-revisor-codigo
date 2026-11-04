@@ -159,6 +159,88 @@ def test_revisao_guarda_etapa_e_heartbeat(repo):
     assert lida.atualizado_em == "2026-01-01T10:00:00+00:00"
 
 
+# ---------- migração versionada e backup (v3 fase 1) ----------
+
+def test_banco_novo_registra_versoes_aplicadas_sem_gerar_backup(tmp_path):
+    from revisor.adaptadores.banco import RepositorioSQLite
+    caminho = tmp_path / "novo.db"
+    RepositorioSQLite(caminho)
+    con = __import__("sqlite3").connect(caminho)
+    versoes = {r[0] for r in con.execute("SELECT versao FROM schema_versao")}
+    con.close()
+    assert {1, 2, 3, 4, 5} <= versoes
+    assert not (tmp_path / "backup").exists()
+
+
+def test_revisao_guarda_aviso_de_workspace(repo):
+    revisao_id = repo.criar_revisao(Revisao("u", "g/p", 1, "back"))
+    revisao = repo.obter_revisao(revisao_id)
+    assert revisao.workspace_aviso == ""
+    revisao.workspace_aviso = "git clone falhou: timeout"
+    repo.salvar_revisao(revisao)
+    assert repo.obter_revisao(revisao_id).workspace_aviso == "git clone falhou: timeout"
+
+
+def test_reabrir_banco_e_idempotente_e_nao_gera_backup_de_novo(tmp_path):
+    from revisor.adaptadores.banco import RepositorioSQLite
+    caminho = tmp_path / "revisor.db"
+    RepositorioSQLite(caminho)
+    RepositorioSQLite(caminho)  # reabre, nada pendente
+    assert not (tmp_path / "backup").exists()
+
+
+def test_banco_antigo_ganha_colunas_novas_e_gera_backup(tmp_path):
+    import sqlite3
+    from revisor.adaptadores.banco import RepositorioSQLite
+    caminho = tmp_path / "antigo.db"
+    con = sqlite3.connect(caminho)
+    con.executescript("""
+        CREATE TABLE revisoes (id INTEGER PRIMARY KEY, mr_url TEXT NOT NULL, projeto TEXT NOT NULL,
+            mr_iid INTEGER NOT NULL, perfil TEXT NOT NULL, status TEXT NOT NULL, titulo_mr TEXT,
+            base_sha TEXT, start_sha TEXT, head_sha TEXT, guia_versao INTEGER,
+            guia_micro_versao INTEGER, mapa_em TEXT, descartados INTEGER DEFAULT 0, nota TEXT,
+            erro TEXT, etapa TEXT, etapa_iniciada_em TEXT, atualizado_em TEXT, criada_em TEXT NOT NULL);
+        INSERT INTO revisoes (id, mr_url, projeto, mr_iid, perfil, status, criada_em)
+            VALUES (1, 'u', 'p', 1, 'back', 'CONCLUIDA', '2024-01-01T00:00:00');
+    """)
+    con.close()
+
+    repo = RepositorioSQLite(caminho)
+
+    revisao = repo.obter_revisao(1)
+    assert revisao.nivel_risco == "" and revisao.arquivos_ignorados == ""
+    backups = list((tmp_path / "backup").glob("antigo-*.db"))
+    assert len(backups) == 1
+
+
+# ---------- v3 R3/R6: execução dos agentes especialistas ----------
+
+def test_salvar_execucao_agente_e_upsert_por_revisao_e_agente(repo):
+    from revisor.dominio.modelos import ExecucaoAgente
+    revisao_id = repo.criar_revisao(Revisao("u", "g/p", 1, "back"))
+    id1 = repo.salvar_execucao_agente(
+        ExecucaoAgente(revisao_id, "qualidade", estado="RODANDO", modelo="sonnet")
+    )
+    id2 = repo.salvar_execucao_agente(
+        ExecucaoAgente(revisao_id, "qualidade", estado="CONCLUIDO", modelo="sonnet",
+                      iniciado_em="2026-01-01T00:00:00+00:00")
+    )
+    assert id1 == id2  # mesmo agente, mesma revisão -> atualiza, não duplica
+    execucoes = repo.listar_execucoes_agentes(revisao_id)
+    assert len(execucoes) == 1
+    assert execucoes[0].estado == "CONCLUIDO"
+    assert execucoes[0].iniciado_em == "2026-01-01T00:00:00+00:00"
+
+
+def test_listar_execucoes_agentes_preserva_ordem_de_insercao(repo):
+    from revisor.dominio.modelos import ExecucaoAgente
+    revisao_id = repo.criar_revisao(Revisao("u", "g/p", 1, "back"))
+    repo.salvar_execucao_agente(ExecucaoAgente(revisao_id, "qualidade"))
+    repo.salvar_execucao_agente(ExecucaoAgente(revisao_id, "seguranca"))
+    assert [e.agente for e in repo.listar_execucoes_agentes(revisao_id)] == ["qualidade", "seguranca"]
+    assert repo.listar_execucoes_agentes(999) == []
+
+
 def test_obter_revisao_anterior_do_mesmo_mr(repo):
     r1 = repo.criar_revisao(Revisao("u", "g/p", 7, "back", status=StatusExecucao.CONCLUIDA))
     r2 = repo.criar_revisao(Revisao("u", "g/p", 7, "back", status=StatusExecucao.ERRO))
@@ -240,8 +322,15 @@ def test_migra_banco_da_versao_anterior(tmp_path):
     revisao = repo.obter_revisao(1)
     assert revisao.guia_micro_versao is None and revisao.mapa_em == ""
     assert revisao.etapa == "" and revisao.etapa_iniciada_em == "" and revisao.atualizado_em == ""
+    assert revisao.workspace_aviso == ""
 
     # histórico de etapas (tabela nova) existe e começa vazio, sem erro de migração
     assert repo.listar_eventos(1) == []
     repo.registrar_evento(1, "Carregando diff do MR...", "2026-01-01T00:00:00+00:00")
     assert len(repo.listar_eventos(1)) == 1
+
+    # tabela de execução dos agentes (v3 fase 3) também existe e funciona num banco antigo
+    from revisor.dominio.modelos import ExecucaoAgente
+    assert repo.listar_execucoes_agentes(1) == []
+    repo.salvar_execucao_agente(ExecucaoAgente(1, "qualidade", estado="RODANDO"))
+    assert len(repo.listar_execucoes_agentes(1)) == 1

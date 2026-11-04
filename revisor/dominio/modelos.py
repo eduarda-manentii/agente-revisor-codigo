@@ -18,10 +18,16 @@ class Perfil:
     extensoes: tuple[str, ...]
     instrucoes: str
     max_apontamentos: int = 25
-    confianca_minima: int = 5
+    ignorar_arquivos: tuple[str, ...] = ()  # padrões extras de ruído (glob), além dos embutidos (R2)
+    nunca_ignorar: tuple[str, ...] = ()  # padrões (glob) que nunca contam como ruído, mesmo embutidos
+    agentes_por_risco: dict[str, tuple[str, ...]] = field(default_factory=dict)  # R3: por NivelRisco
+    modelo_por_agente: dict[str, str] = field(default_factory=dict)
 
     def aceita(self, caminho: str) -> bool:
         return caminho.lower().endswith(self.extensoes)
+
+    def agentes_do_nivel(self, nivel: str) -> tuple[str, ...]:
+        return self.agentes_por_risco.get(nivel, ())
 
 
 def carregar_perfis(pasta: Path) -> dict[str, Perfil]:
@@ -29,18 +35,58 @@ def carregar_perfis(pasta: Path) -> dict[str, Perfil]:
     for arquivo in sorted(pasta.glob("*.toml")):
         dados = tomllib.loads(arquivo.read_text(encoding="utf-8"))
         instrucoes = (pasta / dados["instrucoes_arquivo"]).read_text(encoding="utf-8")
+        agentes_cfg = dados.get("agentes", {})
         perfil = Perfil(
             nome=dados["nome"],
             descricao=dados.get("descricao", ""),
             extensoes=tuple(e.lower() for e in dados["extensoes"]),
             instrucoes=instrucoes,
             max_apontamentos=int(dados.get("max_apontamentos", 25)),
-            confianca_minima=int(dados.get("confianca_minima", 5)),
+            ignorar_arquivos=tuple(dados.get("ignorar_arquivos", [])),
+            nunca_ignorar=tuple(dados.get("nunca_ignorar", [])),
+            agentes_por_risco={
+                nivel: tuple(lista) for nivel, lista in agentes_cfg.items() if nivel != "modelo"
+            },
+            modelo_por_agente=dict(agentes_cfg.get("modelo", {})),
         )
         perfis[perfil.nome] = perfil
     if not perfis:
         raise ValueError(f"Nenhum perfil encontrado em {pasta}.")
     return perfis
+
+
+@dataclass(frozen=True)
+class Agente:
+    nome: str
+    instrucoes: str
+    modelo_padrao: str = "sonnet"
+
+
+_SECAO_APONTAR = "## O que apontar"
+_SECAO_NAO_APONTAR = "## O que NÃO apontar"
+
+
+def carregar_agentes(pasta: Path) -> dict[str, Agente]:
+    """Lê perfis/agentes/<nome>.md; cada um precisa das duas seções obrigatórias. O conteúdo de
+    REGRAS_COMUNS.md (se existir) é concatenado ao final de cada agente."""
+    regras_comuns = ""
+    caminho_comuns = pasta / "REGRAS_COMUNS.md"
+    if caminho_comuns.exists():
+        regras_comuns = caminho_comuns.read_text(encoding="utf-8")
+
+    agentes: dict[str, Agente] = {}
+    for arquivo in sorted(pasta.glob("*.md")):
+        if arquivo.name == "REGRAS_COMUNS.md":
+            continue
+        texto = arquivo.read_text(encoding="utf-8")
+        if _SECAO_APONTAR not in texto or _SECAO_NAO_APONTAR not in texto:
+            raise ValueError(
+                f"Agente '{arquivo.name}' precisa das seções '{_SECAO_APONTAR}' e '{_SECAO_NAO_APONTAR}'."
+            )
+        nome = arquivo.stem
+        instrucoes = texto if not regras_comuns else f"{texto}\n\n{regras_comuns}"
+        agentes[nome] = Agente(nome=nome, instrucoes=instrucoes)
+    return agentes
 
 
 @dataclass(frozen=True)
@@ -92,6 +138,9 @@ class Revisao:
     etapa: str = ""
     etapa_iniciada_em: str = ""
     atualizado_em: str = ""
+    nivel_risco: str = ""
+    arquivos_ignorados: str = ""
+    workspace_aviso: str = ""
     criada_em: str = ""
     id: int | None = None
 
@@ -102,6 +151,22 @@ class EventoRevisao:
     revisao_id: int
     etapa: str
     criado_em: str
+    id: int | None = None
+
+
+@dataclass
+class ExecucaoAgente:
+    """Estado vivo de um agente especialista durante um review (R6): diferente de EventoRevisao
+    (log append-only), isto é uma linha que é atualizada conforme o agente progride."""
+    revisao_id: int
+    agente: str
+    estado: str = "RODANDO"
+    etapa: str = ""
+    modelo: str = ""
+    tokens_entrada: int = 0
+    tokens_saida: int = 0
+    iniciado_em: str = ""
+    atualizado_em: str = ""
     id: int | None = None
 
 

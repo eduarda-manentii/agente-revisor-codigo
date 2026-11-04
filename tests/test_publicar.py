@@ -1,14 +1,30 @@
-from revisor.aplicacao.revisar import RevisarMR
 from revisor.aplicacao.triagem_publicacao import PublicarAprovados, TriarApontamento
-from revisor.dominio.apontamento import MotivoRejeicao, Status
-from tests.fakes import PERFIS, FakeGitLab, FakeLLM, sugestao
+from revisor.dominio.apontamento import Apontamento, MotivoRejeicao, Severidade, Status
+from revisor.dominio.modelos import Revisao, StatusExecucao
+from tests.fakes import FakeGitLab, sugestao
 
 
-def preparar(repo, gitlab, respostas):
-    uc = RevisarMR(gitlab, FakeLLM(respostas), repo, PERFIS, "gitlab.empresa.com")
-    revisao_id = uc.iniciar("https://gitlab.empresa.com/g/p/-/merge_requests/1", "back")
-    uc.executar(revisao_id)
-    return revisao_id, repo.listar_apontamentos(revisao_id)
+def preparar(repo, gitlab, sugestoes):
+    """Cria a revisão e os apontamentos direto no banco, como o pipeline de agentes+coordenador
+    (v3) teria produzido — estes testes só verificam a publicação, não como os apontamentos surgem."""
+    mr = gitlab.mr
+    revisao_id = repo.criar_revisao(Revisao(
+        mr_url="https://gitlab.empresa.com/g/p/-/merge_requests/1", projeto="g/p", mr_iid=1,
+        perfil="back", status=StatusExecucao.CONCLUIDA,
+        base_sha=mr.base_sha, start_sha=mr.start_sha, head_sha=mr.head_sha,
+    ))
+    apontamentos = []
+    for s in sugestoes:
+        arquivo = next(a for a in mr.arquivos if a.caminho_novo == s["arquivo"])
+        linha_obj = arquivo.linha(s["linha"])
+        apontamentos.append(Apontamento(
+            revisao_id=revisao_id, arquivo=arquivo.caminho_novo, caminho_antigo=arquivo.caminho_antigo,
+            linha=s["linha"], linha_antiga=linha_obj.linha_antiga if linha_obj.tipo == " " else None,
+            severidade=Severidade(s["severidade"]), confianca=s["confianca"],
+            texto_original=s["comentario"], trecho=arquivo.trecho(s["linha"]),
+        ))
+    repo.adicionar_apontamentos(apontamentos)
+    return revisao_id, apontamentos
 
 
 def test_publica_so_aprovados_com_texto_editado_e_posicao_correta(repo):

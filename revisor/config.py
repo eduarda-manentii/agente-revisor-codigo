@@ -35,9 +35,13 @@ class Config:
     min_comentarios_guia_micro: int
     mapa_validade_dias: int
     limite_inatividade_segundos: int
+    agentes_paralelos: int
+    limite_turnos_agente: int
     treino_desde: str
     banco: Path
     pasta_perfis: Path
+    pasta_repos: Path
+    pasta_workspaces: Path
     porta: int
 
     @property
@@ -80,8 +84,12 @@ def carregar_config() -> Config:
         min_comentarios_guia_micro=int(os.getenv("MIN_COMENTARIOS_GUIA_MICRO", "30")),
         mapa_validade_dias=int(os.getenv("MAPA_VALIDADE_DIAS", "30")),
         limite_inatividade_segundos=int(os.getenv("LIMITE_INATIVIDADE_SEGUNDOS", "60")),
+        agentes_paralelos=int(os.getenv("AGENTES_PARALELOS", "2")),
+        limite_turnos_agente=int(os.getenv("LIMITE_TURNOS_AGENTE", "15")),
         treino_desde=os.getenv("TREINO_DESDE", desde_padrao).strip(),
         banco=RAIZ / os.getenv("BANCO", "dados/revisor.db"),
         pasta_perfis=RAIZ / "perfis",
+        pasta_repos=RAIZ / "dados" / "repos",
+        pasta_workspaces=RAIZ / "dados" / "workspaces",
         porta=int(os.getenv("PORTA", "8765")),
     )

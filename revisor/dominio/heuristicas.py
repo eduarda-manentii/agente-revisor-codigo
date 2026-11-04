@@ -1,11 +1,8 @@
-"""Heurísticas puras: filtro de ruído, seleção de exemplos e parse da saída do LLM."""
+"""Heurísticas puras: filtro de ruído e seleção de exemplos para o treino."""
 from __future__ import annotations
 
-import json
 import re
-from dataclasses import dataclass
 
-from revisor.dominio.apontamento import Severidade
 from revisor.dominio.modelos import Exemplo
 
 _RUIDO = re.compile(
@@ -52,62 +49,3 @@ def selecionar_exemplos(
             pontuados.append(((jaccard + bonus, ex.resolvido), ex))
     pontuados.sort(key=lambda item: item[0], reverse=True)
     return [ex for _, ex in pontuados[:k]]
-
-
-@dataclass(frozen=True)
-class ApontamentoSugerido:
-    arquivo: str
-    linha: int
-    severidade: Severidade
-    confianca: int
-    comentario: str
-    motivo: str = ""
-    fontes_comentarios: tuple[int, ...] = ()
-    fontes_padrao_guia: str = ""
-    fontes_regra_perfil: str = ""
-
-
-def _ids_citados(valores) -> tuple[int, ...]:
-    if not isinstance(valores, list):
-        return ()
-    ids: list[int] = []
-    for v in valores:
-        texto = str(v).strip().lstrip("#")
-        if texto.lstrip("-").isdigit():
-            ids.append(int(texto))
-    return tuple(ids)
-
-
-def parse_saida_llm(texto: str) -> tuple[list[ApontamentoSugerido], int]:
-    """Extrai o array JSON da resposta. Retorna (válidos, quantidade de itens descartados)."""
-    inicio, fim = texto.find("["), texto.rfind("]")
-    if inicio == -1 or fim < inicio:
-        raise ValueError("A resposta do modelo não contém um array JSON.")
-    dados = json.loads(texto[inicio: fim + 1])
-    if not isinstance(dados, list):
-        raise ValueError("A resposta do modelo não é uma lista.")
-    validos: list[ApontamentoSugerido] = []
-    descartados = 0
-    for item in dados:
-        try:
-            fontes = item.get("fontes") if isinstance(item, dict) else None
-            fontes = fontes if isinstance(fontes, dict) else {}
-            sugerido = ApontamentoSugerido(
-                arquivo=str(item["arquivo"]).strip(),
-                linha=int(item["linha"]),
-                severidade=Severidade(str(item["severidade"]).upper()),
-                confianca=max(1, min(10, int(item["confianca"]))),
-                comentario=str(item["comentario"]).strip(),
-                motivo=str(item.get("motivo", "") or "").strip(),
-                fontes_comentarios=_ids_citados(fontes.get("comentarios")),
-                fontes_padrao_guia=str(fontes.get("padrao_guia", "") or "").strip(),
-                fontes_regra_perfil=str(fontes.get("regra_perfil", "") or "").strip(),
-            )
-        except (KeyError, TypeError, ValueError, AttributeError):
-            descartados += 1
-            continue
-        if not sugerido.arquivo or not sugerido.comentario:
-            descartados += 1
-            continue
-        validos.append(sugerido)
-    return validos, descartados

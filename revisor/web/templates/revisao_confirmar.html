@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block titulo %}Confirmar review · Revisor{% endblock %}
+{% block conteudo %}
+<section class="bloco">
+  <p class="caminho"><a href="/">Início</a> / confirmar review</p>
+  <h1>{{ avaliacao.titulo }}</h1>
+  <p class="meta">
+    {{ avaliacao.arquivos_mantidos|length }} arquivo(s) a revisar · {{ avaliacao.num_linhas }}
+    linha(s) alterada(s)
+    {% if avaliacao.arquivos_ignorados %}· {{ avaliacao.arquivos_ignorados|length }} ignorado(s){% endif %}
+  </p>
+
+  {% if avaliacao.arquivos_ignorados %}
+  <details class="avisos">
+    <summary>Arquivos ignorados pelo filtro de ruído ({{ avaliacao.arquivos_ignorados|length }})</summary>
+    <ul>{% for caminho in avaliacao.arquivos_ignorados %}<li>{{ caminho }}</li>{% endfor %}</ul>
+  </details>
+  {% endif %}
+
+  {% if avaliacao.arquivos_mantidos %}
+  <details class="avisos" open>
+    <summary>Arquivos a revisar ({{ avaliacao.arquivos_mantidos|length }})</summary>
+    <ul>{% for caminho in avaliacao.arquivos_mantidos %}<li>{{ caminho }}</li>{% endfor %}</ul>
+  </details>
+  {% else %}
+  <p class="aviso">Nada a revisar após o filtro de ruído.</p>
+  {% endif %}
+
+  <form method="post" action="/revisoes" class="form-revisao">
+    <input type="hidden" name="url" value="{{ url }}">
+    <input type="hidden" name="perfil" value="{{ perfil }}">
+    <fieldset class="perfis">
+      <legend>Nível de risco (calculado automaticamente; troque se quiser forçar outro)</legend>
+      {% for nivel in niveis_risco %}
+      <label class="opcao">
+        <input type="radio" name="nivel_risco" value="{{ nivel.value }}" {% if nivel == avaliacao.nivel %}checked{% endif %}>
+        <span>{{ rotulos_nivel[nivel] }}</span>
+      </label>
+      {% endfor %}
+    </fieldset>
+    <button type="submit" class="botao botao-principal">Iniciar review</button>
+  </form>
+</section>
+{% endblock %}

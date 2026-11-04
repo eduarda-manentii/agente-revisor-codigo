@@ -18,10 +18,12 @@ from fastapi.templating import Jinja2Templates
 from revisor.aplicacao.revisar import RevisarMR
 from revisor.aplicacao.treinar import TreinarPerfil
 from revisor.aplicacao.triagem_publicacao import PublicarAprovados, TriarApontamento
-from revisor.dominio.apontamento import MotivoRejeicao, Status, TransicaoInvalida
+from revisor.dominio.apontamento import Apontamento, MotivoRejeicao, Status, TransicaoInvalida
 from revisor.dominio.modelos import GERAL, Perfil, StatusExecucao
 from revisor.dominio.progresso import esta_travado, formatar_duracao, transicionar
 from revisor.dominio.prontidao import calcular_prontidao, comparar_com_anterior
+from revisor.dominio.recomendacao import Recomendacao, calcular_recomendacao
+from revisor.dominio.risco import NivelRisco
 from revisor.portas import Repositorio
 
 _PASTA = Path(__file__).parent
@@ -40,6 +42,17 @@ ROTULOS_STATUS = {
     Status.PUBLICADO: "Publicado",
     Status.FALHA_PUBLICACAO: "Falhou ao publicar",
     Status.DESATUALIZADO: "MR mudou depois do review",
+}
+ROTULOS_NIVEL = {
+    NivelRisco.TRIVIAL: "Trivial (mudança pequena e simples)",
+    NivelRisco.LEVE: "Leve (mudança de porte médio)",
+    NivelRisco.COMPLETO: "Completo (mudança grande ou sensível)",
+}
+ROTULOS_RECOMENDACAO = {
+    Recomendacao.APROVAR: "Aprovar",
+    Recomendacao.APROVAR_COM_COMENTARIOS: "Aprovar com comentários",
+    Recomendacao.AJUSTES_NECESSARIOS: "Ajustes necessários",
+    Recomendacao.MUDANCAS_SIGNIFICATIVAS: "Mudanças significativas",
 }
 
 
@@ -76,8 +89,9 @@ def criar_app(s: Servicos) -> FastAPI:
     app.mount("/static", StaticFiles(directory=_PASTA / "static"), name="static")
     templates = Jinja2Templates(directory=_PASTA / "templates")
     templates.env.globals.update(
-        rotulos_motivo=ROTULOS_MOTIVO, rotulos_status=ROTULOS_STATUS, Status=Status,
-        GERAL=GERAL, gitlab_url=s.gitlab_url,
+        rotulos_motivo=ROTULOS_MOTIVO, rotulos_status=ROTULOS_STATUS, rotulos_nivel=ROTULOS_NIVEL,
+        rotulos_recomendacao=ROTULOS_RECOMENDACAO,
+        Status=Status, GERAL=GERAL, gitlab_url=s.gitlab_url, niveis_risco=list(NivelRisco),
     )
 
     def render(request: Request, nome: str, **contexto) -> HTMLResponse:
@@ -102,10 +116,22 @@ def criar_app(s: Servicos) -> FastAPI:
         return render(request, "inicio.html", perfis=perfis, revisoes=s.repo.listar_revisoes(),
                       atualizando=atualizando, mapas=s.repo.listar_mapas())
 
-    @app.post("/revisoes")
-    def nova_revisao(tarefas: BackgroundTasks, url: str = Form(...), perfil: str = Form(...)):
+    @app.post("/revisoes/pre", response_class=HTMLResponse)
+    def pre_revisao(request: Request, url: str = Form(...), perfil: str = Form(...)):
         try:
-            revisao_id = s.revisar.iniciar(url, perfil)
+            avaliacao = s.revisar.avaliar_risco(url, perfil)
+        except ValueError as e:
+            return _voltar("/", str(e), erro=True)
+        return render(request, "revisao_confirmar.html", url=url, perfil=perfil, avaliacao=avaliacao)
+
+    @app.post("/revisoes")
+    def nova_revisao(
+        tarefas: BackgroundTasks, url: str = Form(...), perfil: str = Form(...),
+        nivel_risco: str = Form(""),
+    ):
+        try:
+            nivel_forcado = NivelRisco(nivel_risco) if nivel_risco else None
+            revisao_id = s.revisar.iniciar(url, perfil, nivel_forcado)
         except ValueError as e:
             return _voltar("/", str(e), erro=True)
         tarefas.add_task(s.revisar.executar, revisao_id)
@@ -128,9 +154,12 @@ def criar_app(s: Servicos) -> FastAPI:
             StatusExecucao.PENDENTE, StatusExecucao.PROCESSANDO
         ) else agora.isoformat(timespec="seconds")
 
-        prontidao = comparacao = revisao_anterior = None
+        prontidao = comparacao = revisao_anterior = recomendacao = None
         if revisao.status == StatusExecucao.CONCLUIDA:
             prontidao = calcular_prontidao(apontamentos)
+            recomendacao = calcular_recomendacao(
+                [a.severidade for a in apontamentos if a.status != Status.REJEITADO]
+            )
             revisao_anterior = s.repo.obter_revisao_anterior(revisao.projeto, revisao.mr_iid, revisao.id)
             if revisao_anterior:
                 comparacao = comparar_com_anterior(
@@ -143,7 +172,8 @@ def criar_app(s: Servicos) -> FastAPI:
                       travado=travado, limite_inatividade=s.limite_inatividade_segundos,
                       duracao_total=_duracao(revisao.criada_em, fim),
                       duracao_etapa=_duracao(revisao.etapa_iniciada_em, fim),
-                      prontidao=prontidao, comparacao=comparacao, revisao_anterior=revisao_anterior)
+                      prontidao=prontidao, comparacao=comparacao, revisao_anterior=revisao_anterior,
+                      recomendacao=recomendacao, descartados_coordenador=s.repo.listar_descartes(revisao_id))
 
     @app.get("/revisoes/{revisao_id}/eventos")
     async def eventos_revisao(revisao_id: int):
@@ -184,7 +214,8 @@ def criar_app(s: Servicos) -> FastAPI:
         if atual.status in (StatusExecucao.PENDENTE, StatusExecucao.PROCESSANDO):
             atual.status = transicionar(atual.status, StatusExecucao.CANCELADA)
             s.repo.salvar_revisao(atual)
-        novo_id = s.revisar.iniciar(atual.mr_url, atual.perfil)
+        nivel_forcado = NivelRisco(atual.nivel_risco) if atual.nivel_risco else None
+        novo_id = s.revisar.iniciar(atual.mr_url, atual.perfil, nivel_forcado)
         tarefas.add_task(s.revisar.executar, novo_id)
         return _voltar(f"/revisoes/{novo_id}")
 
@@ -195,6 +226,20 @@ def criar_app(s: Servicos) -> FastAPI:
         except TransicaoInvalida as e:
             return _voltar(destino, str(e), erro=True)
         return RedirectResponse(f"{destino}#ap-{apontamento_id}", status_code=303)
+
+    @app.post("/revisoes/{revisao_id}/descartes/{descarte_id}/recuperar")
+    def recuperar_descarte(revisao_id: int, descarte_id: int):
+        destino = f"/revisoes/{revisao_id}"
+        descarte = s.repo.obter_descarte(descarte_id)
+        ap = Apontamento(
+            revisao_id=revisao_id, arquivo=descarte.arquivo, caminho_antigo=descarte.arquivo,
+            linha=descarte.linha, linha_antiga=None, severidade=descarte.severidade,
+            confianca=descarte.confianca, texto_original=descarte.comentario,
+            trecho=descarte.evidencia, origens=", ".join(descarte.origens),
+        )
+        s.repo.adicionar_apontamentos([ap])
+        s.repo.marcar_descarte_recuperado(descarte_id)
+        return RedirectResponse(f"{destino}#ap-{ap.id}", status_code=303)
 
     @app.post("/revisoes/{revisao_id}/apontamentos/{ap_id}/aprovar")
     def aprovar(revisao_id: int, ap_id: int, texto: str = Form(...)):
