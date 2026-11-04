@@ -104,6 +104,26 @@ def sistema_mapa() -> str:
     )
 
 
+def sistema_resumo_arquitetura() -> str:
+    return (
+        "Você resume ADRs (Architecture Decision Records) de uma equipe para consulta rápida por "
+        "outro revisor. Baseie-se SOMENTE no conteúdo mostrado a seguir — nunca invente status, "
+        "decisão ou consequência que não apareça nos arquivos.\n\n"
+        "Para cada ADR, em poucas linhas: título, status (aceita/proposta/superada — se não estiver "
+        "explícito, diga 'não informado'), a decisão tomada e a principal consequência prática para "
+        "quem for escrever ou revisar código. Ordene as mais recentes/relevantes primeiro. Se uma "
+        "ADR superar outra, deixe isso claro (não repita a decisão superada como se valesse hoje).\n\n"
+        "Responda em Markdown, só com a lista de resumos, sem comentários antes ou depois."
+    )
+
+
+def usuario_resumo_arquitetura(arquivos: list[tuple[str, str]]) -> str:
+    partes = ["# ADRs lidas"]
+    for caminho, conteudo in arquivos:
+        partes.append(f"### arquivo: {caminho}\n```\n{conteudo}\n```")
+    return "\n\n".join(partes)
+
+
 def contexto_mr_md(titulo: str, descricao: str, arquivos: list[str], nivel_risco: str) -> str:
     """Resumo gravado em .revisor/contexto-mr.md (R1) — ainda não lido por ninguém nesta fase, mas
     é a base que os agentes especialistas (R3) vão usar em vez de repetir o contexto em cada prompt."""
@@ -160,8 +180,9 @@ def sistema_coordenador(perfil: str) -> str:
         "- Recategorizar quando fizer sentido (ex.: um problema de performance apontado pelo agente "
         "de qualidade continua sendo um problema de performance).\n"
         "- Descartar especulação, preferência estética sem impacto, falso positivo, e qualquer "
-        "achado que contradiga o guia da equipe — abra o arquivo no workspace pra conferir sempre "
-        "que não tiver certeza antes de descartar ou manter.\n"
+        "achado que contradiga o guia da equipe ou uma decisão de arquitetura registrada (ADR, "
+        "quando houver) — abra o arquivo no workspace pra conferir sempre que não tiver certeza "
+        "antes de descartar ou manter.\n"
         "- Definir a severidade final (P0 quebra funcionamento/corrompe dado/é vulnerabilidade; P1 "
         "é requisito, padrão ou teste importante; P2 é melhoria que não bloqueia).\n"
         "- Reescrever o comentário no tom e estilo do guia da equipe, pronto para postar no MR.\n\n"
@@ -179,6 +200,7 @@ def sistema_coordenador(perfil: str) -> str:
 
 def usuario_coordenador(
     grupos: list[GrupoAchados], guia_geral: Guia | None = None, guia_micro: Guia | None = None,
+    resumo_arquitetura: str | None = None,
 ) -> str:
     partes: list[str] = []
     if guia_geral:
@@ -186,6 +208,8 @@ def usuario_coordenador(
     if guia_micro:
         partes += ["# Guia deste microserviço (prevalece sobre o geral em caso de conflito)",
                   guia_micro.conteudo.strip()]
+    if resumo_arquitetura:
+        partes += ["# Decisões de arquitetura (ADRs)", resumo_arquitetura.strip()]
     partes.append("# Achados pré-agrupados")
     for i, grupo in enumerate(grupos, start=1):
         bloco = [f"## Grupo {i} — {grupo.arquivo}:{grupo.linha} — agentes: {', '.join(grupo.origens)}"]

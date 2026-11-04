@@ -55,6 +55,38 @@ def test_verificar_ssl_true_por_padrao_nao_mexe_na_variavel(adaptador):
     assert "GIT_SSL_NO_VERIFY" not in ws._ambiente()
 
 
+def test_ambiente_usa_authorization_basic_para_o_protocolo_git(adaptador):
+    # O protocolo git smart-HTTP do GitLab exige Basic Auth de verdade — não aceita o header
+    # PRIVATE-TOKEN da API REST. Ver comentário em WorkspaceGit._ambiente.
+    import base64
+    ws = adaptador()
+    valor = ws._ambiente()["GIT_CONFIG_VALUE_0"]
+    assert valor.startswith("Authorization: Basic ")
+    credenciais = base64.b64decode(valor.removeprefix("Authorization: Basic ")).decode()
+    assert credenciais == f"oauth2:{TOKEN_FALSO}"
+
+
+def test_ambiente_desliga_askpass_grafico_herdado(adaptador, monkeypatch):
+    # Simula o terminal integrado do VS Code injetando seu próprio askpass gráfico no ambiente: o
+    # adaptador precisa sobrescrever isso, senão o git fica esperando uma resposta que nunca vem.
+    monkeypatch.setenv("GIT_ASKPASS", "/usr/share/code/resources/app/extensions/git/dist/askpass.sh")
+    monkeypatch.setenv("SSH_ASKPASS", "/usr/share/code/resources/app/extensions/git/dist/askpass-main.js")
+    ws = adaptador()
+    ambiente = ws._ambiente()
+    assert ambiente["GIT_ASKPASS"] == "echo"
+    assert ambiente["SSH_ASKPASS"] == "echo"
+    assert ambiente["GIT_ASKPASS_REQUIRE"] == "never"
+
+
+def test_comando_travado_falha_apos_timeout_em_vez_de_pendurar(adaptador, origem):
+    def executar_que_trava(args, **kw):
+        raise subprocess.TimeoutExpired(cmd=args, timeout=kw.get("timeout"))
+
+    ws = adaptador(executar=executar_que_trava, timeout_segundos=0.01)
+    with pytest.raises(WorkspaceIndisponivel, match="não respondeu"):
+        ws.preparar("grupo/projeto", 7, "qualquer")
+
+
 def test_preparar_le_e_descarta(adaptador, origem):
     _, head = origem
     ws = adaptador()

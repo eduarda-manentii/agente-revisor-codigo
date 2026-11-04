@@ -36,6 +36,7 @@ class ResultadoAgente:
     descartados: int = 0
     erro: str = ""
     modelo_usado: str = ""
+    resposta_bruta: str = ""
 
 
 def parse_achados(texto: str, categoria: str) -> tuple[list[Achado], int]:

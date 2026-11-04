@@ -134,6 +134,7 @@ class Revisao:
     mapa_em: str = ""
     descartados: int = 0
     nota: str = ""
+    resumo_coordenador: str = ""
     erro: str = ""
     etapa: str = ""
     etapa_iniciada_em: str = ""
@@ -165,6 +166,9 @@ class ExecucaoAgente:
     modelo: str = ""
     tokens_entrada: int = 0
     tokens_saida: int = 0
+    achados_validos: int = 0
+    achados_descartados: int = 0
+    resposta_bruta: str = ""
     iniciado_em: str = ""
     atualizado_em: str = ""
     id: int | None = None
@@ -216,6 +220,17 @@ class Guia:
 @dataclass(frozen=True)
 class MapaProjeto:
     projeto: str
+    sha: str
+    conteudo: str
+    arquivos_lidos: tuple[str, ...]
+    criado_em: str
+    id: int | None = None
+
+
+@dataclass(frozen=True)
+class GuiaArquitetura:
+    """Resumo das ADRs (R: contexto de arquitetura no coordenador) — global, não por projeto."""
+    projeto_fonte: str
     sha: str
     conteudo: str
     arquivos_lidos: tuple[str, ...]

@@ -71,6 +71,30 @@ def test_disjuntor_troca_modelo_depois_de_duas_sobrecargas(repo):
     assert execucoes["testes"].modelo == "haiku"
 
 
+def test_achados_descartados_e_resposta_bruta_vao_pra_execucao_agente(repo):
+    from revisor.dominio.agentes import Achado
+    from revisor.dominio.apontamento import Severidade
+    porta = FakePortaAgente(respostas={
+        "qualidade": ResultadoAgente(
+            agente="qualidade",
+            achados=(Achado("A.java", 1, Severidade.P1, 8, "qualidade", "x", "y"),),
+            descartados=2, resposta_bruta='[{"a": 1}]',
+        ),
+        "testes": ResultadoAgente(agente="testes", erro="Saída inválida: lixo", resposta_bruta="lixo"),
+    })
+    uc = ExecutarAgentes(porta, repo, AGENTES)
+    revisao_id = nova_revisao(repo)
+    uc.rodar(revisao_id, PERFIL, "LEVE", WS, ["A.java"])
+    execucoes = {e.agente: e for e in repo.listar_execucoes_agentes(revisao_id)}
+
+    assert execucoes["qualidade"].achados_validos == 1
+    assert execucoes["qualidade"].achados_descartados == 2
+    assert execucoes["qualidade"].resposta_bruta == '[{"a": 1}]'
+
+    assert execucoes["testes"].achados_validos == 0
+    assert execucoes["testes"].resposta_bruta == "lixo"
+
+
 def test_progresso_grava_em_agentes_execucao_e_eventos_revisao(repo):
     porta = FakePortaAgente()
     uc = ExecutarAgentes(porta, repo, AGENTES, agentes_paralelos=1)

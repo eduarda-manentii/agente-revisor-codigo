@@ -169,3 +169,7 @@ textarea { width: 100%; resize: vertical; }
 .prontidao-alta { border-left-color: var(--aprovar); }
 .prontidao-media { border-left-color: var(--p1); }
 .prontidao-baixa { border-left-color: var(--p0); }
+
+.resumo-review { border-left: 4px solid var(--linha); background: var(--superficie); padding: .75rem 1rem; margin-bottom: 1rem; }
+.resumo-review p { margin: 0 0 .3rem; }
+.resumo-review p:last-child { margin-bottom: 0; }

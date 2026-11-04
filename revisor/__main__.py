@@ -88,6 +88,9 @@ def main() -> None:
             cfg.revisores_excluidos, cfg.treino_desde,
             min_comentarios_guia_micro=cfg.min_comentarios_guia_micro,
             mapa_validade_dias=cfg.mapa_validade_dias,
+            adr_projeto=cfg.adr_projeto,
+            adr_caminho=cfg.adr_caminho,
+            adr_validade_dias=cfg.adr_validade_dias,
         ),
     )
     print(f"\n  Revisor rodando em http://127.0.0.1:{cfg.porta}\n")

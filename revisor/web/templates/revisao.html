@@ -48,6 +48,26 @@
     <ul>{% for ev in eventos %}<li>{{ ev.criado_em }} — {{ ev.etapa }}</li>{% endfor %}</ul>
   </details>
   {% endif %}
+  {% if execucoes_agentes %}
+  <details class="avisos">
+    <summary>Agentes especialistas ({{ execucoes_agentes|length }})</summary>
+    <ul>
+      {% for ex in execucoes_agentes %}
+      <li>
+        <strong>{{ ex.agente }}</strong> ({{ ex.modelo }}) — {{ ex.estado }}
+        {% if ex.estado == "CONCLUIDO" %}
+          · {{ ex.achados_validos }} achado(s){% if ex.achados_descartados %}, {{ ex.achados_descartados }} descartado(s) por JSON inválido{% endif %}
+        {% elif ex.etapa %}
+          · {{ ex.etapa }}
+        {% endif %}
+        {% if ex.resposta_bruta %}
+        <details><summary>Resposta bruta</summary><pre class="trecho"><code>{{ ex.resposta_bruta }}</code></pre></details>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
 </section>
 
 {% if em_andamento %}
@@ -69,6 +89,23 @@
   </p>
 {% else %}
   {% if revisao.nota %}<p class="aviso">{{ revisao.nota }}</p>{% endif %}
+  {% if revisao.resumo_coordenador or execucoes_agentes %}
+  <div class="resumo-review">
+    {% if revisao.resumo_coordenador %}
+    <p><strong>Resumo do coordenador:</strong> {{ revisao.resumo_coordenador }}</p>
+    {% endif %}
+    {% if execucoes_agentes %}
+    <p class="ajuda">
+      O que cada agente encontrou:
+      {% for ex in execucoes_agentes %}
+        {{ ex.agente }}
+        {% if ex.estado == "CONCLUIDO" %}({{ ex.achados_validos }} achado(s)){% else %}(falhou){% endif %}
+        {%- if not loop.last %} · {% endif %}
+      {% endfor %}
+    </p>
+    {% endif %}
+  </div>
+  {% endif %}
   {% if prontidao is defined and prontidao is not none %}
   <div class="prontidao prontidao-{{ 'alta' if prontidao >= 80 else ('media' if prontidao >= 50 else 'baixa') }}">
     <p><strong>Prontidão: {{ prontidao }}/100</strong>

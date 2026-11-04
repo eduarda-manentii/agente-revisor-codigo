@@ -17,6 +17,7 @@ from revisor.dominio.modelos import (
     ExecucaoAgente,
     Exemplo,
     Guia,
+    GuiaArquitetura,
     MapaProjeto,
     Revisao,
     Treino,
@@ -198,6 +199,10 @@ class Repositorio(Protocol):
     def listar_mapas(self) -> list[MapaProjeto]:
         """O mapa mais recente de cada projeto."""
         ...
+
+    # resumo de arquitetura (ADRs)
+    def salvar_guia_arquitetura(self, guia: GuiaArquitetura) -> int: ...
+    def guia_arquitetura_ativo(self) -> GuiaArquitetura | None: ...
 
     # execução dos agentes especialistas (R6)
     def salvar_execucao_agente(self, execucao: ExecucaoAgente) -> int:

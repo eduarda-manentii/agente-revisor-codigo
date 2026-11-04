@@ -170,6 +170,7 @@ class RevisarMR:
         self._verificar_cancelamento(revisao)
         workspace: Workspace | None = None
         try:
+            self._progresso(revisao, "Preparando o workspace do repositório")
             try:
                 workspace = self._workspace.preparar(revisao.projeto, revisao.mr_iid, mr.head_sha)
             except WorkspaceIndisponivel as erro:
@@ -208,6 +209,7 @@ class RevisarMR:
             self._progresso(revisao, "Consultando o guia de padrões")
             guia_geral = self._repo.guia_ativo(perfil.nome, GERAL)
             guia_micro = self._repo.guia_ativo(perfil.nome, revisao.projeto)
+            guia_arquitetura = self._repo.guia_arquitetura_ativo()
             mapa = self._repo.mapa_ativo(revisao.projeto)
             revisao.guia_versao = guia_geral.versao if guia_geral else None
             revisao.guia_micro_versao = guia_micro.versao if guia_micro else None
@@ -239,8 +241,11 @@ class RevisarMR:
 
             self._verificar_cancelamento(revisao)
             self._progresso(revisao, "Coordenador consolidando")
-            resultado_coord = self._rodar_coordenador(revisao, perfil, workspace, grupos, guia_geral, guia_micro)
+            resultado_coord = self._rodar_coordenador(
+                revisao, perfil, workspace, grupos, guia_geral, guia_micro, guia_arquitetura
+            )
             resultado_coord = aplicar_limite(resultado_coord, perfil.max_apontamentos)
+            revisao.resumo_coordenador = resultado_coord.resumo
 
             por_caminho = {a.caminho_novo: a for a in arquivos}
             apontamentos: list[Apontamento] = []
@@ -274,10 +279,11 @@ class RevisarMR:
 
     def _rodar_coordenador(
         self, revisao: Revisao, perfil: Perfil, workspace: Workspace, grupos: list[GrupoAchados],
-        guia_geral, guia_micro,
+        guia_geral, guia_micro, guia_arquitetura=None,
     ) -> ResultadoCoordenacao:
         sistema = prompts.sistema_coordenador(perfil.nome)
-        usuario = prompts.usuario_coordenador(grupos, guia_geral, guia_micro)
+        resumo_arquitetura = guia_arquitetura.conteudo if guia_arquitetura else None
+        usuario = prompts.usuario_coordenador(grupos, guia_geral, guia_micro, resumo_arquitetura)
 
         def ao_progresso(evento) -> None:
             self._progresso(revisao, f"Coordenador: {evento.descricao}")

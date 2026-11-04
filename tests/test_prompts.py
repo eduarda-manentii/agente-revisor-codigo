@@ -118,6 +118,32 @@ def test_usuario_coordenador_sanitiza_achados():
     assert "</guia_revisor>" not in usuario
 
 
+def test_usuario_coordenador_inclui_bloco_de_adr_so_quando_passado():
+    from revisor.dominio.agentes import Achado
+    from revisor.dominio.apontamento import Severidade
+    from revisor.dominio.consolidacao import GrupoAchados
+    grupo = GrupoAchados(arquivo="A.java", linha=10, achados=(
+        Achado("A.java", 10, Severidade.P1, 8, "qualidade", "problema x", "evidencia x"),
+    ))
+    sem_adr = prompts.usuario_coordenador([grupo])
+    assert "Decisões de arquitetura" not in sem_adr
+
+    com_adr = prompts.usuario_coordenador([grupo], resumo_arquitetura="ADR-1: usar Postgres")
+    assert "Decisões de arquitetura" in com_adr
+    assert "ADR-1: usar Postgres" in com_adr
+
+
+def test_sistema_coordenador_menciona_adr():
+    assert "ADR" in prompts.sistema_coordenador("back")
+
+
+def test_usuario_resumo_arquitetura_e_sistema_resumo_arquitetura():
+    usuario = prompts.usuario_resumo_arquitetura([("docs/adr/0001-x.md", "# Contexto\nDecisão: X")])
+    assert "### arquivo: docs/adr/0001-x.md" in usuario
+    assert "Decisão: X" in usuario
+    assert "ADR" in prompts.sistema_resumo_arquitetura()
+
+
 def test_usuario_mapa_e_sistema_mapa():
     usuario = prompts.usuario_mapa("g/divida", [("Service.java", "class X {}")], ["src/main", "src/test"])
     assert "# Projeto: g/divida" in usuario

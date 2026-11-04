@@ -19,6 +19,7 @@ from revisor.dominio.modelos import (
     ExecucaoAgente,
     Exemplo,
     Guia,
+    GuiaArquitetura,
     MapaProjeto,
     Revisao,
     StatusExecucao,
@@ -30,7 +31,7 @@ CREATE TABLE IF NOT EXISTS revisoes (
     id INTEGER PRIMARY KEY, mr_url TEXT NOT NULL, projeto TEXT NOT NULL, mr_iid INTEGER NOT NULL,
     perfil TEXT NOT NULL, status TEXT NOT NULL, titulo_mr TEXT, base_sha TEXT, start_sha TEXT,
     head_sha TEXT, guia_versao INTEGER, guia_micro_versao INTEGER, mapa_em TEXT,
-    descartados INTEGER DEFAULT 0, nota TEXT, erro TEXT, etapa TEXT, etapa_iniciada_em TEXT,
+    descartados INTEGER DEFAULT 0, nota TEXT, resumo_coordenador TEXT, erro TEXT, etapa TEXT, etapa_iniciada_em TEXT,
     atualizado_em TEXT, nivel_risco TEXT, arquivos_ignorados TEXT, workspace_aviso TEXT,
     criada_em TEXT NOT NULL
 );
@@ -81,6 +82,7 @@ CREATE TABLE IF NOT EXISTS agentes_execucao (
     id INTEGER PRIMARY KEY, revisao_id INTEGER NOT NULL REFERENCES revisoes(id),
     agente TEXT NOT NULL, estado TEXT NOT NULL, etapa TEXT, modelo TEXT,
     tokens_entrada INTEGER DEFAULT 0, tokens_saida INTEGER DEFAULT 0,
+    achados_validos INTEGER DEFAULT 0, achados_descartados INTEGER DEFAULT 0, resposta_bruta TEXT,
     iniciado_em TEXT, atualizado_em TEXT,
     UNIQUE (revisao_id, agente)
 );
@@ -92,6 +94,10 @@ CREATE TABLE IF NOT EXISTS descartes_coordenacao (
     origens TEXT, recuperado INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ix_descartes_coordenacao_revisao ON descartes_coordenacao(revisao_id);
+CREATE TABLE IF NOT EXISTS guia_arquitetura (
+    id INTEGER PRIMARY KEY, projeto_fonte TEXT NOT NULL, sha TEXT NOT NULL, conteudo TEXT NOT NULL,
+    arquivos_lidos TEXT NOT NULL, criado_em TEXT NOT NULL
+);
 """
 
 # Colunas acrescentadas depois da primeira versão: bancos antigos recebem ALTER TABLE.
@@ -138,6 +144,16 @@ _MIGRACOES_VERSIONADAS: list[tuple[int, str]] = [
         )
     """),
     (8, "CREATE INDEX IF NOT EXISTS ix_descartes_coordenacao_revisao ON descartes_coordenacao(revisao_id)"),
+    (9, """
+        CREATE TABLE IF NOT EXISTS guia_arquitetura (
+            id INTEGER PRIMARY KEY, projeto_fonte TEXT NOT NULL, sha TEXT NOT NULL,
+            conteudo TEXT NOT NULL, arquivos_lidos TEXT NOT NULL, criado_em TEXT NOT NULL
+        )
+    """),
+    (10, "ALTER TABLE agentes_execucao ADD COLUMN achados_validos INTEGER DEFAULT 0"),
+    (11, "ALTER TABLE agentes_execucao ADD COLUMN achados_descartados INTEGER DEFAULT 0"),
+    (12, "ALTER TABLE agentes_execucao ADD COLUMN resposta_bruta TEXT"),
+    (13, "ALTER TABLE revisoes ADD COLUMN resumo_coordenador TEXT"),
 ]
 
 _CAMPOS_APONTAMENTO = [f.name for f in fields(Apontamento) if f.name != "id"]
@@ -650,6 +666,29 @@ class RepositorioSQLite:
             ).fetchall()
         return [self._para_mapa(r) for r in linhas]
 
+    # ---------- resumo de arquitetura (ADRs) ----------
+    def salvar_guia_arquitetura(self, guia: GuiaArquitetura) -> int:
+        with self._conexao() as con:
+            cursor = con.execute(
+                "INSERT INTO guia_arquitetura (projeto_fonte, sha, conteudo, arquivos_lidos, "
+                "criado_em) VALUES (?, ?, ?, ?, ?)",
+                (guia.projeto_fonte, guia.sha, guia.conteudo,
+                 json.dumps(list(guia.arquivos_lidos)), guia.criado_em or _agora()),
+            )
+            return cursor.lastrowid
+
+    @staticmethod
+    def _para_guia_arquitetura(r: sqlite3.Row) -> GuiaArquitetura:
+        return GuiaArquitetura(
+            id=r["id"], projeto_fonte=r["projeto_fonte"], sha=r["sha"], conteudo=r["conteudo"],
+            arquivos_lidos=tuple(json.loads(r["arquivos_lidos"])), criado_em=r["criado_em"],
+        )
+
+    def guia_arquitetura_ativo(self) -> GuiaArquitetura | None:
+        with self._conexao() as con:
+            r = con.execute("SELECT * FROM guia_arquitetura ORDER BY id DESC LIMIT 1").fetchone()
+        return self._para_guia_arquitetura(r) if r else None
+
     # ---------- execução dos agentes especialistas (R6) ----------
     def salvar_execucao_agente(self, execucao: ExecucaoAgente) -> int:
         """Upsert por (revisao_id, agente): grava exatamente os campos recebidos. Quem chama
@@ -675,8 +714,10 @@ class RepositorioSQLite:
     @staticmethod
     def _para_execucao_agente(r: sqlite3.Row) -> ExecucaoAgente:
         dados = dict(r)
-        for campo in ("etapa", "modelo", "iniciado_em", "atualizado_em"):
+        for campo in ("etapa", "modelo", "iniciado_em", "atualizado_em", "resposta_bruta"):
             dados[campo] = dados[campo] or ""
+        for campo in ("tokens_entrada", "tokens_saida", "achados_validos", "achados_descartados"):
+            dados[campo] = dados[campo] or 0
         return ExecucaoAgente(**dados)
 
     def listar_execucoes_agentes(self, revisao_id: int) -> list[ExecucaoAgente]:

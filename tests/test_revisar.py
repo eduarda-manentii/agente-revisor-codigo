@@ -152,6 +152,43 @@ def test_coordenador_recebe_grupos_com_guia_geral_e_micro(repo):
     assert revisao.guia_versao == 1 and revisao.guia_micro_versao == 1
 
 
+def test_coordenador_recebe_resumo_de_arquitetura_quando_configurado(repo):
+    from revisor.dominio.modelos import GuiaArquitetura
+    repo.salvar_guia_arquitetura(
+        GuiaArquitetura(projeto_fonte="attus/workspace", sha="s1", conteudo="ADR-1: usar Postgres",
+                        arquivos_lidos=("docs/adr/0001-x.md",), criado_em="2026-01-01T10:00:00+00:00")
+    )
+    coord = FakeCoordenador()
+    uc, _, _, _ = caso(repo, coordenador=coord)
+    rodar(uc, repo)
+    _, usuario = coord.chamadas[0]
+    assert "ADR-1: usar Postgres" in usuario
+    assert "Decisões de arquitetura" in usuario
+
+
+def test_coordenador_sem_adr_configurada_nao_muda_o_prompt(repo):
+    coord = FakeCoordenador()
+    uc, _, _, _ = caso(repo, coordenador=coord)
+    rodar(uc, repo)
+    _, usuario = coord.chamadas[0]
+    assert "Decisões de arquitetura" not in usuario
+
+
+def test_resumo_do_coordenador_e_gravado_na_revisao(repo):
+    coord = FakeCoordenador(resposta='{"apontamentos": [], "descartados": [], '
+                                     '"resumo": "MR pequeno, sem problemas relevantes."}')
+    uc, _, _, _ = caso(repo, coordenador=coord)
+    revisao, _ = rodar(uc, repo)
+    assert revisao.resumo_coordenador == "MR pequeno, sem problemas relevantes."
+
+
+def test_coordenador_falho_nao_tem_resumo(repo):
+    coord = FakeCoordenador(excecao=RuntimeError("falhou"))
+    uc, _, _, _ = caso(repo, coordenador=coord)
+    revisao, _ = rodar(uc, repo)
+    assert revisao.resumo_coordenador == ""
+
+
 def test_coordenador_falho_cai_no_fallback_com_achados_originais(repo):
     ag = FakePortaAgente(respostas={
         "qualidade": ResultadoAgente(agente="qualidade", achados=(achado(severidade="P0", confianca=9),)),

@@ -173,7 +173,8 @@ def criar_app(s: Servicos) -> FastAPI:
                       duracao_total=_duracao(revisao.criada_em, fim),
                       duracao_etapa=_duracao(revisao.etapa_iniciada_em, fim),
                       prontidao=prontidao, comparacao=comparacao, revisao_anterior=revisao_anterior,
-                      recomendacao=recomendacao, descartados_coordenador=s.repo.listar_descartes(revisao_id))
+                      recomendacao=recomendacao, descartados_coordenador=s.repo.listar_descartes(revisao_id),
+                      execucoes_agentes=s.repo.listar_execucoes_agentes(revisao_id))
 
     @app.get("/revisoes/{revisao_id}/eventos")
     async def eventos_revisao(revisao_id: int):

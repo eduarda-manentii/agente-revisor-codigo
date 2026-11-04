@@ -22,6 +22,8 @@ from revisor.portas import EventoAgente, Workspace
 
 __all__ = ["AgenteClaudeCode", "ErroAgente", "montar_argumentos"]
 
+_LIMITE_RESPOSTA_BRUTA = 20_000  # guardada pra diagnóstico quando "0 achados" deixa dúvida
+
 
 class ErroAgente(RuntimeError):
     pass
@@ -85,7 +87,9 @@ class AgenteClaudeCode:
                             "Responda só com o array JSON, sem texto antes ou depois."
                         )
                         continue
-                    return ResultadoAgente(agente=agente.nome, erro=f"Saída inválida: {e}", modelo_usado=modelo)
+                    return ResultadoAgente(agente=agente.nome, erro=f"Saída inválida: {e}", modelo_usado=modelo,
+                                          resposta_bruta=texto[:_LIMITE_RESPOSTA_BRUTA])
                 return ResultadoAgente(
                     agente=agente.nome, achados=tuple(achados), descartados=descartados, modelo_usado=modelo,
+                    resposta_bruta=texto[:_LIMITE_RESPOSTA_BRUTA],
                 )

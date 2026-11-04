@@ -95,9 +95,11 @@ class ExecutarAgentes:
                     with bloqueio:
                         falhas_sobrecarga += 1
                 self._registrar(revisao_id, nome, _estado_do_erro(resultado.erro), resultado.erro,
-                                modelo, iniciado_em)
+                                modelo, iniciado_em, resposta_bruta=resultado.resposta_bruta)
             else:
-                self._registrar(revisao_id, nome, EstadoAgente.CONCLUIDO, "Concluído", modelo, iniciado_em)
+                self._registrar(revisao_id, nome, EstadoAgente.CONCLUIDO, "Concluído", modelo, iniciado_em,
+                                achados_validos=len(resultado.achados), achados_descartados=resultado.descartados,
+                                resposta_bruta=resultado.resposta_bruta)
             return resultado
 
         resultados: list[ResultadoAgente] = []
@@ -109,8 +111,10 @@ class ExecutarAgentes:
 
     def _registrar(
         self, revisao_id: int, agente: str, estado: EstadoAgente, etapa: str, modelo: str, iniciado_em: str,
+        achados_validos: int = 0, achados_descartados: int = 0, resposta_bruta: str = "",
     ) -> None:
         self._repo.salvar_execucao_agente(ExecucaoAgente(
             revisao_id=revisao_id, agente=agente, estado=estado.value, etapa=etapa, modelo=modelo,
-            iniciado_em=iniciado_em, atualizado_em=_agora(),
+            achados_validos=achados_validos, achados_descartados=achados_descartados,
+            resposta_bruta=resposta_bruta, iniciado_em=iniciado_em, atualizado_em=_agora(),
         ))

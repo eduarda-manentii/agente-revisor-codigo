@@ -1,6 +1,6 @@
 from revisor.dominio.apontamento import Apontamento, MotivoRejeicao, Severidade, Status
 from revisor.dominio.fontes import Fontes
-from revisor.dominio.modelos import GERAL, Exemplo, MapaProjeto, Revisao, StatusExecucao
+from revisor.dominio.modelos import GERAL, Exemplo, GuiaArquitetura, MapaProjeto, Revisao, StatusExecucao
 
 
 def test_round_trip_apontamento_com_enums_e_nulos(repo):
@@ -172,6 +172,32 @@ def test_banco_novo_registra_versoes_aplicadas_sem_gerar_backup(tmp_path):
     assert not (tmp_path / "backup").exists()
 
 
+def test_salvar_e_recuperar_guia_arquitetura_ativo(repo):
+    assert repo.guia_arquitetura_ativo() is None
+    repo.salvar_guia_arquitetura(
+        GuiaArquitetura(projeto_fonte="attus/workspace", sha="s1", conteudo="resumo 1",
+                        arquivos_lidos=("docs/adr/0001-x.md",), criado_em="2026-01-01T10:00:00+00:00")
+    )
+    repo.salvar_guia_arquitetura(
+        GuiaArquitetura(projeto_fonte="attus/workspace", sha="s2", conteudo="resumo 2",
+                        arquivos_lidos=("docs/adr/0002-y.md",), criado_em="2026-01-02T10:00:00+00:00")
+    )
+    atual = repo.guia_arquitetura_ativo()
+    assert atual.conteudo == "resumo 2"
+    assert atual.sha == "s2"
+    assert atual.arquivos_lidos == ("docs/adr/0002-y.md",)
+
+
+def test_migracao_9_soma_as_existentes(tmp_path):
+    from revisor.adaptadores.banco import RepositorioSQLite
+    caminho = tmp_path / "novo.db"
+    RepositorioSQLite(caminho)
+    con = __import__("sqlite3").connect(caminho)
+    versoes = {r[0] for r in con.execute("SELECT versao FROM schema_versao")}
+    con.close()
+    assert {6, 7, 8, 9} <= versoes
+
+
 def test_revisao_guarda_aviso_de_workspace(repo):
     revisao_id = repo.criar_revisao(Revisao("u", "g/p", 1, "back"))
     revisao = repo.obter_revisao(revisao_id)
@@ -179,6 +205,25 @@ def test_revisao_guarda_aviso_de_workspace(repo):
     revisao.workspace_aviso = "git clone falhou: timeout"
     repo.salvar_revisao(revisao)
     assert repo.obter_revisao(revisao_id).workspace_aviso == "git clone falhou: timeout"
+
+
+def test_revisao_guarda_resumo_do_coordenador(repo):
+    revisao_id = repo.criar_revisao(Revisao("u", "g/p", 1, "back"))
+    revisao = repo.obter_revisao(revisao_id)
+    assert revisao.resumo_coordenador == ""
+    revisao.resumo_coordenador = "MR pequeno, sem problemas relevantes."
+    repo.salvar_revisao(revisao)
+    assert repo.obter_revisao(revisao_id).resumo_coordenador == "MR pequeno, sem problemas relevantes."
+
+
+def test_migracao_13_soma_as_existentes(tmp_path):
+    from revisor.adaptadores.banco import RepositorioSQLite
+    caminho = tmp_path / "novo.db"
+    RepositorioSQLite(caminho)
+    con = __import__("sqlite3").connect(caminho)
+    versoes = {r[0] for r in con.execute("SELECT versao FROM schema_versao")}
+    con.close()
+    assert {12, 13} <= versoes
 
 
 def test_reabrir_banco_e_idempotente_e_nao_gera_backup_de_novo(tmp_path):
@@ -230,6 +275,38 @@ def test_salvar_execucao_agente_e_upsert_por_revisao_e_agente(repo):
     assert len(execucoes) == 1
     assert execucoes[0].estado == "CONCLUIDO"
     assert execucoes[0].iniciado_em == "2026-01-01T00:00:00+00:00"
+
+
+def test_execucao_agente_guarda_achados_e_resposta_bruta(repo):
+    from revisor.dominio.modelos import ExecucaoAgente
+    revisao_id = repo.criar_revisao(Revisao("u", "g/p", 1, "back"))
+    repo.salvar_execucao_agente(
+        ExecucaoAgente(revisao_id, "qualidade", estado="CONCLUIDO", modelo="sonnet",
+                      achados_validos=2, achados_descartados=1, resposta_bruta='[{"a": 1}]')
+    )
+    execucao = repo.listar_execucoes_agentes(revisao_id)[0]
+    assert execucao.achados_validos == 2
+    assert execucao.achados_descartados == 1
+    assert execucao.resposta_bruta == '[{"a": 1}]'
+
+
+def test_execucao_agente_sem_resposta_bruta_vira_string_vazia(repo):
+    from revisor.dominio.modelos import ExecucaoAgente
+    revisao_id = repo.criar_revisao(Revisao("u", "g/p", 1, "back"))
+    repo.salvar_execucao_agente(ExecucaoAgente(revisao_id, "qualidade"))
+    execucao = repo.listar_execucoes_agentes(revisao_id)[0]
+    assert execucao.resposta_bruta == ""
+    assert execucao.achados_validos == 0
+
+
+def test_migracoes_10_a_12_somam_as_existentes(tmp_path):
+    from revisor.adaptadores.banco import RepositorioSQLite
+    caminho = tmp_path / "novo.db"
+    RepositorioSQLite(caminho)
+    con = __import__("sqlite3").connect(caminho)
+    versoes = {r[0] for r in con.execute("SELECT versao FROM schema_versao")}
+    con.close()
+    assert {9, 10, 11, 12} <= versoes
 
 
 def test_listar_execucoes_agentes_preserva_ordem_de_insercao(repo):

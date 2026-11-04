@@ -161,6 +161,24 @@ def test_timeout_total_do_agente():
     assert processos[0].encerrado is True
 
 
+def test_resposta_bruta_e_guardada_no_resultado():
+    achado = {"arquivo": "A.java", "linha": 1, "severidade": "P1", "confianca": 8,
+              "comentario": "x", "evidencia": "y"}
+    script = [(0, evento_resultado(json.dumps([achado])))]
+    abrir, relogio, _ = fabrica([script])
+    uc = AgenteClaudeCode(abrir_processo=abrir, relogio=relogio)
+    resultado = uc.executar(AGENTE, WS, "sonnet", "usuario", lambda e: None)
+    assert json.loads(resultado.resposta_bruta) == [achado]
+
+
+def test_resposta_bruta_e_guardada_mesmo_quando_saida_e_invalida_apos_retentativa():
+    script_ruim = [(0, evento_resultado("isso não é json nenhum"))]
+    abrir, relogio, _ = fabrica([script_ruim, script_ruim])
+    uc = AgenteClaudeCode(abrir_processo=abrir, relogio=relogio)
+    resultado = uc.executar(AGENTE, WS, "sonnet", "usuario", lambda e: None)
+    assert "isso não é json nenhum" in resultado.resposta_bruta
+
+
 def test_json_invalido_tenta_de_novo_uma_vez_e_depois_falha():
     script_ruim = [(0, evento_resultado("isso não é json nenhum"))]
     abrir, relogio, processos = fabrica([script_ruim, script_ruim])

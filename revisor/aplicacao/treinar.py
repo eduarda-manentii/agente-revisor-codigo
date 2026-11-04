@@ -20,10 +20,11 @@ from pathlib import PurePosixPath
 from typing import Callable
 
 from revisor import prompts
+from revisor.dominio.adr import selecionar_arquivos_adr
 from revisor.dominio.heuristicas import e_ruido
 from revisor.dominio.mapa import excluido as caminho_excluido
 from revisor.dominio.mapa import selecionar_arquivos_mapa
-from revisor.dominio.modelos import GERAL, Exemplo, MapaProjeto, Perfil, StatusExecucao, Treino
+from revisor.dominio.modelos import GERAL, Exemplo, GuiaArquitetura, MapaProjeto, Perfil, StatusExecucao, Treino
 from revisor.portas import PortaGitLab, PortaLLM, Repositorio
 
 log = logging.getLogger(__name__)
@@ -51,6 +52,9 @@ class TreinarPerfil:
         max_caracteres_lote: int = 120_000,
         min_comentarios_guia_micro: int = 30,
         mapa_validade_dias: int = 30,
+        adr_projeto: str = "",
+        adr_caminho: str = "",
+        adr_validade_dias: int = 30,
         relogio: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         self._gitlab = gitlab
@@ -64,6 +68,9 @@ class TreinarPerfil:
         self._max_lote = max_caracteres_lote
         self._min_comentarios_guia_micro = min_comentarios_guia_micro
         self._mapa_validade_dias = mapa_validade_dias
+        self._adr_projeto = adr_projeto
+        self._adr_caminho = adr_caminho
+        self._adr_validade_dias = adr_validade_dias
         self._relogio = relogio
 
     def iniciar(self, nome_perfil: str, completo: bool = False) -> int:
@@ -82,6 +89,7 @@ class TreinarPerfil:
             self._coletar(treino, projetos)
             self._incorporar(treino)
             self._mapear(treino, projetos)
+            self._atualizar_resumo_arquitetura(treino)
             treino.status = StatusExecucao.CONCLUIDA
         except Exception as erro:
             log.exception("Falha no treino %s", treino_id)
@@ -259,3 +267,55 @@ class TreinarPerfil:
                 criado_em=self._relogio().isoformat(timespec="seconds"),
             )
         )
+
+    # ---------- resumo de arquitetura (ADRs) ----------
+    def _atualizar_resumo_arquitetura(self, treino: Treino) -> None:
+        if not self._adr_projeto:
+            return
+        try:
+            existente = self._repo.guia_arquitetura_ativo()
+            if existente and not treino.completo:
+                idade_dias = (self._relogio() - datetime.fromisoformat(existente.criado_em)).days
+                if idade_dias < self._adr_validade_dias:
+                    return
+
+            arvore = self._gitlab.obter_arvore(self._adr_projeto)
+            if existente and existente.sha == arvore.sha and not treino.completo:
+                return
+
+            self._progresso(treino, f"Lendo ADRs de {self._adr_projeto}…")
+            caminhos = selecionar_arquivos_adr(list(arvore.caminhos), self._adr_caminho)
+            if not caminhos:
+                treino.avisos += (
+                    f"{self._adr_projeto}: nenhuma ADR encontrada "
+                    f"({'pasta ' + self._adr_caminho if self._adr_caminho else 'autodetecção'}).\n"
+                )
+                self._repo.salvar_treino(treino)
+                return
+
+            arquivos: list[tuple[str, str]] = []
+            total = 0
+            for caminho in caminhos:
+                conteudo = self._gitlab.obter_arquivo(self._adr_projeto, caminho, arvore.sha)
+                if conteudo is None:
+                    continue
+                conteudo = conteudo[:_LIMITE_ARQUIVO_MAPA]
+                if total + len(conteudo) > _LIMITE_AMOSTRA_MAPA:
+                    break
+                arquivos.append((caminho, conteudo))
+                total += len(conteudo)
+
+            usuario = prompts.usuario_resumo_arquitetura(arquivos)
+            resumo = self._llm.completar(prompts.sistema_resumo_arquitetura(), usuario).strip()
+            if not resumo:
+                raise ValueError("O modelo devolveu um resumo de arquitetura vazio.")
+            self._repo.salvar_guia_arquitetura(
+                GuiaArquitetura(
+                    projeto_fonte=self._adr_projeto, sha=arvore.sha, conteudo=resumo,
+                    arquivos_lidos=tuple(c for c, _ in arquivos),
+                    criado_em=self._relogio().isoformat(timespec="seconds"),
+                )
+            )
+        except Exception as erro:
+            treino.avisos += f"{self._adr_projeto}: não foi possível atualizar as ADRs: {erro}\n"
+            self._repo.salvar_treino(treino)

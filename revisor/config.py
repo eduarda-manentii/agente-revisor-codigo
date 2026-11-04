@@ -34,6 +34,9 @@ class Config:
     revisores_excluidos: frozenset[str]
     min_comentarios_guia_micro: int
     mapa_validade_dias: int
+    adr_projeto: str
+    adr_caminho: str
+    adr_validade_dias: int
     limite_inatividade_segundos: int
     agentes_paralelos: int
     limite_turnos_agente: int
@@ -83,6 +86,9 @@ def carregar_config() -> Config:
         ),
         min_comentarios_guia_micro=int(os.getenv("MIN_COMENTARIOS_GUIA_MICRO", "30")),
         mapa_validade_dias=int(os.getenv("MAPA_VALIDADE_DIAS", "30")),
+        adr_projeto=os.getenv("ADR_PROJETO", "").strip().strip("/"),
+        adr_caminho=os.getenv("ADR_CAMINHO", "").strip().strip("/"),
+        adr_validade_dias=int(os.getenv("ADR_VALIDADE_DIAS", "30")),
         limite_inatividade_segundos=int(os.getenv("LIMITE_INATIVIDADE_SEGUNDOS", "60")),
         agentes_paralelos=int(os.getenv("AGENTES_PARALELOS", "2")),
         limite_turnos_agente=int(os.getenv("LIMITE_TURNOS_AGENTE", "15")),

@@ -319,6 +319,89 @@ def test_projeto_sem_arquivo_do_perfil_nao_e_mapeado(repo):
     assert llm.chamadas == []
 
 
+# ---------- resumo de arquitetura (ADRs) ----------
+
+def test_resumo_de_arquitetura_e_gerado_quando_configurado(repo):
+    arvore_adr = ArvoreProjeto(sha="sha1", caminhos=("docs/adr/0001-x.md", "README.md"))
+    gitlab = FakeGitLab(
+        arvores={"g/api": ArvoreProjeto(sha="sha1", caminhos=("README.md",)), "attus/workspace": arvore_adr},
+        conteudos_arquivo={("attus/workspace", "docs/adr/0001-x.md", "sha1"): "# ADR 1\nDecisão: usar Postgres"},
+    )
+    treino = treinar(repo, gitlab, FakeLLM("Resumo das ADRs"), projetos=["g/api"],
+                     adr_projeto="attus/workspace")
+    assert treino.status == StatusExecucao.CONCLUIDA
+    guia = repo.guia_arquitetura_ativo()
+    assert guia is not None
+    assert guia.conteudo == "Resumo das ADRs"
+    assert guia.sha == "sha1"
+    assert guia.arquivos_lidos == ("docs/adr/0001-x.md",)
+
+
+def test_adr_projeto_vazio_nunca_chama_obter_arvore(repo):
+    gitlab = FakeGitLab(arvores={"g/api": ArvoreProjeto(sha="sha1", caminhos=("README.md",))})
+    treino = treinar(repo, gitlab, FakeLLM(), projetos=["g/api"])  # adr_projeto não configurado
+    assert treino.status == StatusExecucao.CONCLUIDA
+    assert repo.guia_arquitetura_ativo() is None
+    assert "ADRs" not in treino.avisos
+
+
+def test_resumo_de_arquitetura_recente_nao_e_refeito(repo):
+    arvore_adr = ArvoreProjeto(sha="sha1", caminhos=("docs/adr/0001-x.md",))
+    gitlab = FakeGitLab(
+        arvores={"g/api": ArvoreProjeto(sha="sha1", caminhos=("README.md",)), "attus/workspace": arvore_adr},
+        conteudos_arquivo={("attus/workspace", "docs/adr/0001-x.md", "sha1"): "# ADR 1"},
+    )
+    relogio1 = lambda: datetime(2025, 1, 10, tzinfo=timezone.utc)
+    treinar(repo, gitlab, FakeLLM("Resumo v1"), projetos=["g/api"], adr_projeto="attus/workspace",
+            relogio=relogio1)
+    assert repo.guia_arquitetura_ativo().sha == "sha1"
+
+    relogio2 = lambda: datetime(2025, 1, 15, tzinfo=timezone.utc)  # 5 dias depois: ainda válido
+    llm2 = FakeLLM()
+    treinar(repo, gitlab, llm2, projetos=["g/api"], adr_projeto="attus/workspace", relogio=relogio2)
+    assert llm2.chamadas == []
+
+
+def test_resumo_de_arquitetura_vencido_mas_sha_igual_nao_chama_llm(repo):
+    arvore_adr = ArvoreProjeto(sha="sha1", caminhos=("docs/adr/0001-x.md",))
+    gitlab = FakeGitLab(
+        arvores={"g/api": ArvoreProjeto(sha="sha1", caminhos=("README.md",)), "attus/workspace": arvore_adr},
+        conteudos_arquivo={("attus/workspace", "docs/adr/0001-x.md", "sha1"): "# ADR 1"},
+    )
+    relogio1 = lambda: datetime(2025, 1, 1, tzinfo=timezone.utc)
+    treinar(repo, gitlab, FakeLLM("Resumo v1"), projetos=["g/api"], adr_projeto="attus/workspace",
+            relogio=relogio1, adr_validade_dias=30)
+
+    relogio2 = lambda: datetime(2025, 2, 10, tzinfo=timezone.utc)  # 40 dias: vencido, mas SHA igual
+    llm2 = FakeLLM()
+    treinar(repo, gitlab, llm2, projetos=["g/api"], adr_projeto="attus/workspace", relogio=relogio2,
+            adr_validade_dias=30)
+    assert llm2.chamadas == []
+    assert repo.guia_arquitetura_ativo().conteudo == "Resumo v1"
+
+
+def test_nenhuma_adr_encontrada_registra_aviso_sem_quebrar(repo):
+    gitlab = FakeGitLab(
+        arvores={"g/api": ArvoreProjeto(sha="sha1", caminhos=("README.md",)),
+                "attus/workspace": ArvoreProjeto(sha="sha1", caminhos=("README.md",))},
+    )
+    treino = treinar(repo, gitlab, FakeLLM(), projetos=["g/api"], adr_projeto="attus/workspace")
+    assert treino.status == StatusExecucao.CONCLUIDA
+    assert repo.guia_arquitetura_ativo() is None
+    assert "attus/workspace" in treino.avisos
+
+
+def test_falha_ao_atualizar_adr_vira_aviso_sem_quebrar_treino(repo):
+    gitlab = FakeGitLab(
+        arvores={"g/api": ArvoreProjeto(sha="sha1", caminhos=("README.md",))},
+        falhar_arvore={"attus/workspace"},
+    )
+    treino = treinar(repo, gitlab, FakeLLM(), projetos=["g/api"], adr_projeto="attus/workspace")
+    assert treino.status == StatusExecucao.CONCLUIDA
+    assert "attus/workspace" in treino.avisos
+    assert repo.guia_arquitetura_ativo() is None
+
+
 def test_falha_ao_mapear_vira_aviso(repo):
     gitlab = FakeGitLab(falhar_arvore={"g/quebrado"})
     treino = treinar(repo, gitlab, FakeLLM(), projetos=["g/quebrado"])
